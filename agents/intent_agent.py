@@ -1,120 +1,102 @@
-"""Intent Agent - L0 Intent Recognition."""
+"""Intent Agent - L0: Intent recognition using ReAct."""
 
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Any
 
-from core.base_agent import BaseAgent, AgentRole
-from core.event_bus import EventBus
-from core.models import (
-    EntityType,
-    IntentNode,
-    IntentChain,
-    IntentStatus,
-)
-from core.state_store import StateStore
+from agents.langgraph_agents import BaseReActAgent
+from core.models import AgentState, IntentChain, IntentNode, IntentStatus
 
 logger = logging.getLogger(__name__)
 
 
-class IntentAgent(BaseAgent):
-    """L0 - Intent Recognition Agent.
+INTENT_SYSTEM_PROMPT = """You are an Intent Recognition Agent (L0).
+Your task is to understand the user's query and extract:
+1. The primary intent
+2. Key entities mentioned
+3. The confidence level
 
-    Extracts user intent from queries and maintains intent chains
-    across multi-turn conversations.
+Think step by step about what the user wants.
+Output a clear intent description and extracted entities."""
+
+
+class IntentAgent(BaseReActAgent):
+    """L0 Agent for intent recognition.
+
+    Uses ReAct pattern internally for reasoning about user intent.
     """
 
-    AGENT_ID = "intent_agent"
-
-    # Keyword mapping for stub intent recognition
-    INTENT_KEYWORDS = {
-        "search": ["search", "find", "look up", "查询", "搜索", "找"],
-        "calculate": ["calculate", "compute", "计算", "等于"],
-        "create": ["create", "make", "生成", "创建", "新建"],
-        "explain": ["explain", "what is", "什么是", "解释", "说明"],
-        "list": ["list", "show", "列出", "显示", "有哪些"],
-    }
-
-    def __init__(
-        self,
-        state_store: StateStore | None = None,
-        event_bus: EventBus | None = None,
-    ):
+    def __init__(self, llm: Any | None = None):
         super().__init__(
-            agent_id=self.AGENT_ID,
+            agent_id="intent_agent",
             name="Intent Recognition",
-            role=AgentRole.INTENT,
-            state_store=state_store,
-            event_bus=event_bus,
+            role="L0",
+            system_prompt=INTENT_SYSTEM_PROMPT,
         )
+        self.llm = llm
 
-    def run(self, input_text: str) -> IntentChain:
-        """Recognize intent from user query.
+    async def think(self, state: AgentState) -> str:
+        """Analyze user query to extract intent."""
+        query = state.user_query
 
-        Args:
-            input_text: User query string.
+        # Simple keyword-based intent extraction
+        # In production, this would use LLM
+        keywords = self._extract_intent_keywords(query)
 
-        Returns:
-            IntentChain with recognized intent and entities.
-        """
-        # Get recent intent history
-        recent_chains = self._get_intent_history(limit=5)
-        parent_id = recent_chains[-1].current_node_id if recent_chains else None
+        return f"Analyzing query: '{query[:50]}...'. Keywords: {keywords}"
 
-        # Extract intent (stub implementation)
-        intent_node = self._extract_intent_stub(input_text, parent_id)
+    def _extract_intent_keywords(self, query: str) -> dict[str, Any]:
+        """Extract intent keywords from query.
 
-        # Build or extend intent chain
-        if recent_chains:
-            chain = recent_chains[-1].with_node(intent_node)
-        else:
-            chain = IntentChain.create(intent_node)
-
-        # Store in StateStore
-        self._store_entity(EntityType.INTENT, chain.chain_id, chain)
-
-        # Publish event
-        self._emit_delta(
-            EntityType.INTENT,
-            chain.chain_id,
-            {
-                "current_node_id": chain.current_node_id,
-                "current_intent": intent_node.intent,
-            },
-        )
-
-        logger.info("Intent recognized: %s (confidence: %.2f)", intent_node.intent, intent_node.confidence)
-        return chain
-
-    def _get_intent_history(self, limit: int = 5) -> list[IntentChain]:
-        """Get recent intent chains from StateStore."""
-        chains = self.state_store.list_by_type(EntityType.INTENT)
-        return chains[-limit:] if chains else []
-
-    def _extract_intent_stub(self, query: str, parent_id: str | None) -> IntentNode:
-        """Simple keyword-based intent extraction for Phase 2.
-
-        In Phase 3+, this will be replaced with LLM-based extraction.
+        Stub implementation - in production use LLM.
         """
         query_lower = query.lower()
+        intent = "general_query"
+        entities = {}
 
-        for intent_type, keywords in self.INTENT_KEYWORDS.items():
-            if any(kw in query_lower for kw in keywords):
-                return IntentNode.create(
-                    intent=intent_type,
-                    entities={"query": query, "keywords": [kw for kw in keywords if kw in query_lower]},
-                    confidence=0.8,
-                    parent_id=parent_id,
-                    status=IntentStatus.ACTIVE,
-                )
+        # Simple keyword extraction
+        if any(w in query_lower for w in ["search", "find", "look up", "搜索", "查找"]):
+            intent = "search"
+        elif any(w in query_lower for w in ["create", "make", "generate", "创建", "生成"]):
+            intent = "create"
+        elif any(w in query_lower for w in ["update", "modify", "change", "修改"]):
+            intent = "update"
+        elif any(w in query_lower for w in ["delete", "remove", "删除"]):
+            intent = "delete"
+        elif any(w in query_lower for w in ["explain", "what", "how", "解释", "什么", "怎么"]):
+            intent = "explanation"
 
-        # Default to general intent
-        return IntentNode.create(
-            intent="general",
-            entities={"query": query},
-            confidence=0.5,
-            parent_id=parent_id,
-            status=IntentStatus.ACTIVE,
+        # Extract entities (simple)
+        words = query.split()
+        entities["word_count"] = len(words)
+
+        return {"intent": intent, "entities": entities}
+
+    async def act(self, state: AgentState, thought: str) -> dict[str, Any]:
+        """Create intent chain from extracted intent."""
+        query = state.user_query
+        extracted = self._extract_intent_keywords(query)
+
+        intent_node = IntentNode(
+            intent=extracted["intent"],
+            entities=extracted["entities"],
+            confidence=0.9,
         )
+
+        intent_chain = IntentChain(
+            nodes=[intent_node],
+            current_node_id=intent_node.id,
+        )
+
+        logger.info("IntentAgent: %s (confidence: %.2f)", intent_node.intent, intent_node.confidence)
+
+        return {
+            "intent_chain": intent_chain,
+            "metadata": {"_finished": True},  # End ReAct loop
+        }
+
+
+def create_intent_agent(llm: Any = None) -> IntentAgent:
+    """Factory function to create IntentAgent."""
+    return IntentAgent(llm=llm)

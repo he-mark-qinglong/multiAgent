@@ -1,115 +1,79 @@
-"""Synthesizer Agent - L1 Result Synthesis."""
+"""Synthesizer Agent - L1: Result synthesis using ReAct."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from core.base_agent import BaseAgent, AgentRole
-from core.event_bus import EventBus
-from core.models import EntityType
-from core.state_store import StateStore
-
-from agents.types import ExecutionResult, FinalResponse
+from agents.langgraph_agents import BaseReActAgent
+from core.models import AgentState, FinalResponse
 
 logger = logging.getLogger(__name__)
 
 
-class SynthesizerAgent(BaseAgent):
-    """L1 - Result Synthesis Agent.
+SYNTHESIZER_SYSTEM_PROMPT = """You are a Synthesizer Agent (L1).
+Your task is to synthesize results from all executors:
+1. Aggregate execution results
+2. Map goals to results
+3. Generate final response
 
-    Aggregates SubGoal results and generates final responses.
+Create a clear, comprehensive response for the user."""
+
+
+class SynthesizerAgent(BaseReActAgent):
+    """L1 Agent for result synthesis.
+
+    Uses ReAct pattern to reason about result aggregation.
     """
 
-    AGENT_ID = "synthesizer_agent"
-
-    def __init__(
-        self,
-        state_store: StateStore | None = None,
-        event_bus: EventBus | None = None,
-    ):
+    def __init__(self, llm: Any | None = None):
         super().__init__(
-            agent_id=self.AGENT_ID,
+            agent_id="synthesizer_agent",
             name="Result Synthesizer",
-            role=AgentRole.SYNTHESIZER,
-            state_store=state_store,
-            event_bus=event_bus,
+            role="L1",
+            system_prompt=SYNTHESIZER_SYSTEM_PROMPT,
         )
+        self.llm = llm
 
-    def run(self, results: list[ExecutionResult]) -> FinalResponse:
-        """Synthesize final response from execution results.
+    async def think(self, state: AgentState) -> str:
+        """Analyze execution results."""
+        results = state.execution_results
+        goals = state.goals
 
-        Args:
-            results: List of ExecutionResults from all Executors.
+        completed = sum(1 for g in goals.values() if g.status.value == "completed")
+        failed = sum(1 for g in goals.values() if g.status.value == "failed")
 
-        Returns:
-            FinalResponse with aggregated results.
-        """
-        # Separate successful and failed
-        successful = [r for r in results if r.status == "completed"]
-        failed = [r for r in results if r.status == "failed"]
+        return f"Synthesizing {len(results)} results: {completed} completed, {failed} failed"
 
-        # Aggregate results
-        aggregated = self._aggregate_results(successful)
+    async def act(self, state: AgentState, thought: str) -> dict[str, Any]:
+        """Generate final response."""
+        results = state.execution_results
+        goals = state.goals
+        intent_chain = state.intent_chain
 
-        # Generate response (stub implementation)
-        response = self._synthesize_response_stub(aggregated, failed)
+        # Count results
+        completed = sum(1 for g in goals.values() if g.status.value == "completed")
+        failed = sum(1 for g in goals.values() if g.status.value == "failed")
 
-        logger.info(
-            "Synthesis complete: %d/%d goals achieved",
-            len(successful),
-            len(results),
-        )
+        # Generate response
+        response_parts = [f"完成了 {completed}/{len(goals)} 个任务。"]
+        for goal_id, result in results.items():
+            if result:
+                response_parts.append(f"- {goal_id}: {result.get('result', result.get('output', 'Done'))}")
 
-        return FinalResponse(
-            response=response,
-            metadata={
-                "total_goals": len(results),
-                "successful": len(successful),
-                "failed": len(failed),
-                "total_duration_ms": sum(r.duration_ms for r in results),
-            },
-            goals_achieved=[r.goal_id for r in successful],
-            goals_failed=[r.goal_id for r in failed],
-        )
+        if failed > 0:
+            response_parts.append(f"\n⚠️ {failed} 个任务失败。")
 
-    def _aggregate_results(self, results: list[ExecutionResult]) -> dict[str, Any]:
-        """Aggregate successful results."""
-        aggregated = {
-            "results": [],
-            "summary": {
-                "count": len(results),
-                "total_duration_ms": sum(r.duration_ms for r in results),
-            },
+        final_response = " ".join(response_parts)
+
+        logger.info("SynthesizerAgent: %s", final_response[:100])
+
+        return {
+            "final_response": final_response,
+            "metadata": {"_finished": True},
         }
 
-        for result in results:
-            aggregated["results"].append({
-                "goal_id": result.goal_id,
-                "result": result.result,
-                "duration_ms": result.duration_ms,
-            })
 
-        return aggregated
-
-    def _synthesize_response_stub(
-        self,
-        aggregated: dict[str, Any],
-        failed: list[ExecutionResult],
-    ) -> str:
-        """Stub response synthesis for Phase 2.
-
-        In Phase 3+, this will use LLM to generate natural language response.
-        """
-        parts = []
-
-        if aggregated["results"]:
-            parts.append(f"Successfully processed {len(aggregated['results'])} task(s).")
-            for r in aggregated["results"]:
-                if isinstance(r["result"], dict):
-                    parts.append(f"- {r['result'].get('description', 'Task')}")
-
-        if failed:
-            parts.append(f"Failed to process {len(failed)} task(s).")
-
-        return " ".join(parts) if parts else "No results to synthesize."
+def create_synthesizer_agent(llm: Any = None) -> SynthesizerAgent:
+    """Factory function to create SynthesizerAgent."""
+    return SynthesizerAgent(llm=llm)

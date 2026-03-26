@@ -1,0 +1,22 @@
+# Multi-Agent Collaboration System - Dependencies
+
+# Core LangGraph dependencies (required)
+langgraph>=0.2.0
+langgraph-checkpoint>=2.0.0
+
+# LangChain core (required for ReAct agents)
+langchain-core>=0.3.0
+langchain-openai>=0.1.0
+
+# LangSmith (optional - for observability)
+langsmith>=0.1.0
+
+# Data validation
+pydantic>=2.0.0
+
+# Persistence (production)
+psycopg2-binary>=2.9.9
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

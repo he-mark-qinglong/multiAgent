@@ -1,127 +1,96 @@
-"""Executor Agent - L2+ Goal Execution."""
+"""Executor Agent - L2+: Task execution using ReAct."""
 
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
-from core.base_agent import BaseAgent, AgentRole
-from core.event_bus import EventBus
-from core.models import (
-    EntityType,
-    Goal,
-    GoalStatus,
-    ProcessStep,
-)
-from core.state_store import StateStore
-
-from agents.types import ExecutionResult
+from agents.langgraph_agents import BaseReActAgent
+from core.models import AgentState, Goal, GoalStatus
 
 logger = logging.getLogger(__name__)
 
 
-class ExecutorAgent(BaseAgent):
-    """L2+ - Goal Execution Agent.
+EXECUTOR_SYSTEM_PROMPT = """You are an Executor Agent (L2+).
+Your task is to execute assigned goals:
+1. Execute the goal action
+2. Report status updates
+3. Return execution results
 
-    Executes assigned goals and reports results.
+Be thorough and report your progress."""
+
+
+class ExecutorAgent(BaseReActAgent):
+    """L2+ Agent for task execution.
+
+    Uses ReAct pattern to reason about goal execution.
+    Supports HITL interrupts for dangerous operations.
     """
 
-    def __init__(
-        self,
-        executor_id: int,
-        state_store: StateStore | None = None,
-        event_bus: EventBus | None = None,
-    ):
+    def __init__(self, executor_id: str, llm: Any | None = None):
         super().__init__(
             agent_id=f"executor_{executor_id}",
             name=f"Executor {executor_id}",
-            role=AgentRole.EXECUTOR,
-            state_store=state_store,
-            event_bus=event_bus,
+            role="L2+",
+            system_prompt=EXECUTOR_SYSTEM_PROMPT,
         )
         self.executor_id = executor_id
+        self.llm = llm
 
-    def run(self, goal: Goal) -> ExecutionResult:
-        """Execute an assigned goal.
+    async def think(self, state: AgentState) -> str:
+        """Analyze assigned goal."""
+        goals = state.goals
+        if not goals:
+            return "No goals assigned"
 
-        Args:
-            goal: Goal to execute.
+        goal_ids = list(goals.keys())
+        return f"Executing goals: {goal_ids}"
 
-        Returns:
-            ExecutionResult with goal result and logs.
+    async def act(self, state: AgentState, thought: str) -> dict[str, Any]:
+        """Execute the goals.
+
+        Checks for approval requirements before execution.
         """
-        start_time = time.time()
-        logs: list[dict] = []
+        goals = state.goals
+        if not goals:
+            return {"execution_results": {}}
 
-        try:
-            # Update status to in_progress
-            self._emit_delta(
-                EntityType.GOAL,
-                goal.id,
-                {"status": GoalStatus.IN_PROGRESS.value, "assigned_to": self.agent_id},
-            )
+        # Check if approval needed (dangerous operations)
+        if self._needs_approval(state):
+            if state.needs_approval:
+                result = self.interrupt_and_wait("需要审批才能执行", state)
+                if not result.get("approved", False):
+                    return {
+                        "execution_results": {},
+                        "metadata": {"_finished": True, "interrupted": True},
+                    }
 
-            # Execute goal steps (stub implementation)
-            result = self._execute_goal_stub(goal, logs)
+        # Execute goals (stub)
+        execution_results = {}
+        for goal_id, goal in goals.items():
+            # Update goal status
+            goal.status = GoalStatus.COMPLETED
+            result = {"status": "completed", "output": f"Executed: {goal.description}"}
+            execution_results[goal_id] = result
 
-            # Final status update
-            status = "completed" if result else "failed"
-            self._emit_delta(
-                EntityType.GOAL,
-                goal.id,
-                {
-                    "status": status,
-                    "result": result,
-                    "completed_at": int(time.time()),
-                },
-            )
+        logger.info("Executor %s: completed %d goals", self.executor_id, len(execution_results))
 
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.info("Goal %s %s in %dms", goal.id, status, duration_ms)
-
-            return ExecutionResult(
-                goal_id=goal.id,
-                status=status,
-                result=result,
-                logs=logs,
-                duration_ms=duration_ms,
-            )
-
-        except Exception as e:
-            logger.error("Executor error for goal %s: %s", goal.id, e)
-            self._emit_delta(
-                EntityType.GOAL,
-                goal.id,
-                {"status": GoalStatus.FAILED.value, "error": str(e)},
-            )
-            return ExecutionResult(
-                goal_id=goal.id,
-                status="failed",
-                result=str(e),
-                logs=logs,
-                duration_ms=int((time.time() - start_time) * 1000),
-            )
-
-    def _execute_goal_stub(self, goal: Goal, logs: list[dict]) -> Any:
-        """Stub goal execution for Phase 2.
-
-        In Phase 3+, this will call actual tools/services.
-        """
-        # Simulate execution steps
-        step = ProcessStep.create(
-            goal_id=goal.id,
-            action=f"Executing {goal.type}",
-            input_data=goal.params,
-            agent_id=self.agent_id,
-            output=f"Result for {goal.description}",
-        )
-        logs.append({"step": step.step_id, "action": step.action, "output": step.output})
-
-        # Return a mock result based on goal type
         return {
-            "goal_type": goal.type,
-            "description": goal.description,
-            "params": goal.params,
-            "executed_by": self.agent_id,
+            "execution_results": execution_results,
+            "metadata": {"_finished": True},
         }
+
+    def _needs_approval(self, state: AgentState) -> bool:
+        """Check if operation needs human approval."""
+        goals = state.goals
+        dangerous_types = {"delete", "execute_command", "rm", "危险操作"}
+
+        for goal in goals.values():
+            if goal.type.lower() in dangerous_types:
+                return True
+        return False
+
+
+def create_executor_agent(executor_id: str, llm: Any = None) -> ExecutorAgent:
+    """Factory function to create ExecutorAgent."""
+    return ExecutorAgent(executor_id=executor_id, llm=llm)

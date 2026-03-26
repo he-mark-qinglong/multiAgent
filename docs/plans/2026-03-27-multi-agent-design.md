@@ -10,12 +10,100 @@
 - 全量状态同步：上下文、任务、资源、工具全部共享
 - 长对话支持（50+轮）：Token线性增长，不爆炸
 - 低延迟 + 低Token消耗的平衡优化
+- **基于 LangGraph 框架实现 ReAct Agent**
+- **集成 LangSmith 实现可观测性**
 
 ---
 
-## 2. 系统架构
+## 2. 框架架构 (LangGraph + LangSmith)
 
-### 2.1 整体架构图 (Mermaid)
+### 2.1 LangGraph 编排架构 (Mermaid)
+
+```mermaid
+flowchart TB
+    subgraph Graph["LangGraph StateGraph"]
+        START([START]) --> intent_node
+        intent_node --> planner_node
+        planner_node --> fan_out
+        fan_out -->|Send API| parallel_executor
+        parallel_executor --> synthesizer_node
+        synthesizer_node --> END([END])
+    end
+
+    subgraph Nodes["Agent Nodes"]
+        intent_node["Intent ReAct Agent<br/>L0: 意图识别"]
+        planner_node["Planner ReAct Agent<br/>L1: 任务规划"]
+        parallel_executor["Executor ReAct Agents<br/>L2+: 并行执行"]
+        synthesizer_node["Synthesizer ReAct Agent<br/>L1: 结果汇总"]
+    end
+
+    subgraph Persistence["持久化层"]
+        Checkpointer["Checkpointer<br/>InMemory / Postgres"]
+        Store["Store<br/>长期记忆"]
+    end
+
+    subgraph Observability["LangSmith 可观测性"]
+        Tracing["Tracing<br/>执行路径"]
+        Metrics["Metrics<br/>Token使用"]
+        History["History<br/>对话回放"]
+    end
+
+    Graph --> Persistence
+    Graph --> Observability
+
+    style Graph fill:#e8f5e9
+    style Nodes fill:#e3f2fd
+    style Persistence fill:#fff3e0
+    style Observability fill:#fce4ec
+```
+
+### 2.2 ReAct Agent 模式
+
+```
+ReAct (Reasoning + Acting) 循环:
+
+┌─────────────────────────────────────────────────────┐
+│                    Thought                          │
+│   "我需要理解用户的意图，提取关键实体..."              │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                    Action                          │
+│   调用工具: query_knowledge_base(query)             │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────┐
+│                  Observation                        │
+│   检索结果: [entity_1, entity_2, confidence: 0.9]   │
+└─────────────────────┬───────────────────────────────┘
+                      │
+                      ▼
+              继续循环或结束
+```
+
+### 2.3 流式输出架构
+
+```
+Client                    LangGraph                    LLM
+  │                          │                        │
+  │──── stream(query) ──────>│                        │
+  │                          │──── invoke ────────────>│
+  │                          │<─── tokens ────────────│
+  │<──── chunk ──────────────│                        │
+  │                          │                        │
+  │                          │<─── tokens ────────────│
+  │<──── chunk ──────────────│                        │
+  │                          │                        │
+  │              (实时流式输出)                        │
+```
+
+---
+
+## 3. 系统架构
+
+### 3.1 整体架构图 (Mermaid)
 
 ```mermaid
 flowchart TB
@@ -82,7 +170,7 @@ flowchart TB
     style STATE fill:#f3e5f5
 ```
 
-### 2.2 ASCII 架构图 (兼容性版本)
+### 3.2 ASCII 架构图 (兼容性版本)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -137,7 +225,7 @@ flowchart TB
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.3 状态同步架构 (Mermaid)
+### 3.3 状态同步架构 (Mermaid)
 
 ```mermaid
 flowchart LR

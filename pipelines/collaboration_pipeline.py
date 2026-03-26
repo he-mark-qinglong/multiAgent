@@ -1,180 +1,253 @@
-"""Collaboration Pipeline - Orchestrates the full agent pipeline."""
+"""Collaboration Pipeline - LangGraph orchestration with stream() + HITL.
+
+This module provides the primary entry point for the multi-agent pipeline.
+
+Core Design (from 04-architecture-principles.md):
+- ReAct 循环 (内部) → 结构化输出 → Streaming (外层展示)
+- interrupt() 用于需要人工审批的操作
+- Checkpointer 保存中断点状态
+
+Usage:
+    from pipelines.collaboration_pipeline import CollaborationPipeline
+
+    # Simple usage
+    pipeline = CollaborationPipeline()
+    result = pipeline.invoke("Search for AI news")
+
+    # With streaming
+    for chunk in pipeline.stream("Search for AI news"):
+        if chunk["type"] == "result":
+            print(chunk["data"]["final_response"])
+
+    # With HITL
+    pipeline.request_approval(thread_id, "delete", "将删除文件...")
+    # ... show approval UI ...
+    pipeline.submit_approval(thread_id, approved=True)
+"""
 
 from __future__ import annotations
 
-import concurrent.futures
 import logging
-import time
-from dataclasses import dataclass, field
+from typing import Any, Generator
 
-from core.event_bus import EventBus
-from core.models import Goal
-from core.state_store import StateStore
-
-from agents.intent_agent import IntentAgent
-from agents.planner_agent import PlannerAgent
-from agents.executor_agent import ExecutorAgent
-from agents.synthesizer_agent import SynthesizerAgent
-from agents.types import ExecutionResult, FinalResponse
+from core.models import UserQuery, FinalResponse
+from core.langgraph_integration import PipelineStateGraph, HumanApprovalManager
+from core.langsmith_integration import setup_langsmith, LangSmithTracer
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class PipelineConfig:
-    """Configuration for the collaboration pipeline."""
-
-    max_parallel_executors: int = 3
-    executor_pool_size: int = 5
-    timeout_seconds: float = 30.0
-    retry_on_failure: bool = True
-    max_retries: int = 2
-
-
-@dataclass
-class PipelineStats:
-    """Statistics from pipeline execution."""
-
-    total_goals: int = 0
-    goals_completed: int = 0
-    goals_failed: int = 0
-    total_duration_ms: int = 0
-    errors: list[str] = field(default_factory=list)
-
-
 class CollaborationPipeline:
-    """Orchestrates the full Intent → Plan → Execute → Synthesize pipeline.
+    """Main pipeline for multi-agent collaboration.
 
-    Example:
-        pipeline = CollaborationPipeline()
-        response, stats = pipeline.run("Search for weather in Beijing")
+    Features:
+    - LangGraph StateGraph orchestration
+    - ReAct agents (internal reasoning loop)
+    - stream() outputs final structured results only
+    - interrupt() + HITL for human approval
+    - Checkpointer for state persistence
+    - LangSmith tracing integration
     """
 
     def __init__(
         self,
-        state_store: StateStore | None = None,
-        event_bus: EventBus | None = None,
-        config: PipelineConfig | None = None,
+        langsmith_project: str = "multi-agent",
+        enable_tracing: bool = True,
     ):
-        """Initialize the pipeline."""
-        self.state_store = state_store or StateStore()
-        self.event_bus = event_bus or EventBus()
-        self.config = config or PipelineConfig()
+        """Initialize the pipeline.
 
-        self.intent_agent = IntentAgent(self.state_store, self.event_bus)
-        self.planner_agent = PlannerAgent(self.state_store, self.event_bus)
-        self.synthesizer = SynthesizerAgent(self.state_store, self.event_bus)
+        Args:
+            langsmith_project: LangSmith project name.
+            enable_tracing: Enable LangSmith tracing.
+        """
+        self.tracer = LangSmithTracer(project_name=langsmith_project)
 
-        self._executor_pool: list[ExecutorAgent] = []
-        self._executor_pool_size = self.config.executor_pool_size
+        if enable_tracing:
+            setup_langsmith(project_name=langsmith_project)
 
-        logger.info(
-            "Pipeline: max_parallel=%d, pool_size=%d, timeout=%.1fs",
-            self.config.max_parallel_executors,
-            self._executor_pool_size,
-            self.config.timeout_seconds,
-        )
+        self.graph = PipelineStateGraph()
+        self.approval_manager = HumanApprovalManager(self.graph)
 
-    def run(self, query: str) -> tuple[FinalResponse, PipelineStats]:
-        """Execute the full collaboration pipeline."""
-        start_time = time.time()
-        stats = PipelineStats()
+        logger.info("CollaborationPipeline initialized")
+
+    def invoke(
+        self,
+        query: str | UserQuery,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Synchronous invoke.
+
+        Args:
+            query: User query string or UserQuery object.
+            thread_id: Thread ID for persistence.
+
+        Returns:
+            Final state with final_response.
+        """
+        if isinstance(query, str):
+            query = UserQuery(query=query)
+
+        thread_id = thread_id or query.session_id
+        config = {"configurable": {"thread_id": thread_id}}
 
         try:
-            # Phase 1: Intent Recognition
-            logger.info("Phase 1: Intent Recognition")
-            intent_chain = self.intent_agent.run(query)
-
-            # Phase 2: Planning
-            logger.info("Phase 2: Planning")
-            goal_tree, plan = self.planner_agent.run(intent_chain)
-            stats.total_goals = len(goal_tree.goals)
-
-            # Phase 3: Parallel Execution
-            logger.info("Phase 3: Parallel Execution")
-            results = self._execute_parallel(list(goal_tree.goals.values()), stats)
-
-            stats.goals_completed = sum(1 for r in results if r.status == "completed")
-            stats.goals_failed = sum(1 for r in results if r.status == "failed")
-
-            # Phase 4: Synthesis
-            logger.info("Phase 4: Synthesis")
-            final_response = self.synthesizer.run(results)
-
+            result = self.graph.invoke(query, config=config)
+            return result
         except Exception as e:
-            logger.error("Pipeline error: %s", e, exc_info=True)
-            stats.errors.append(str(e))
-            final_response = FinalResponse(
-                response=f"Pipeline error: {str(e)}",
-                metadata={"error": True},
-                goals_achieved=[],
-                goals_failed=[],
-            )
+            logger.error("Pipeline invoke error: %s", e)
+            raise
 
-        stats.total_duration_ms = int((time.time() - start_time) * 1000)
-        logger.info(
-            "Pipeline: %dms, %d/%d goals",
-            stats.total_duration_ms,
-            stats.goals_completed,
-            stats.total_goals,
-        )
-
-        return final_response, stats
-
-    def _get_executor_pool(self) -> list[ExecutorAgent]:
-        """Get or create the executor pool."""
-        if not self._executor_pool:
-            self._executor_pool = [
-                ExecutorAgent(i, self.state_store, self.event_bus)
-                for i in range(self._executor_pool_size)
-            ]
-        return self._executor_pool
-
-    def _execute_parallel(
+    def stream(
         self,
-        goals: list[Goal],
-        stats: PipelineStats,
-    ) -> list[ExecutionResult]:
-        """Execute goals in parallel with concurrency control."""
-        if not goals:
-            return []
+        query: str | UserQuery,
+        thread_id: str | None = None,
+    ) -> Generator[dict[str, Any], None, None]:
+        """Streaming invoke.
 
-        executors = self._get_executor_pool()
-        assignments = list(zip(goals, executors[:len(goals)]))
-        results: list[ExecutionResult] = []
+        IMPORTANT: This streams the FINAL structured result,
+        NOT intermediate ReAct steps.
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=self.config.max_parallel_executors
-        ) as executor:
-            futures = {
-                executor.submit(exec.run, goal): goal
-                for goal, exec in assignments
+        ReAct loop runs fully internally for consistency,
+        then final result is streamed to the client.
+
+        Args:
+            query: User query.
+            thread_id: Thread ID for persistence.
+
+        Yields:
+            Stream chunks with final result.
+        """
+        if isinstance(query, str):
+            query = UserQuery(query=query)
+
+        thread_id = thread_id or query.session_id
+
+        try:
+            result = self.invoke(query, thread_id)
+
+            # Stream structured output (not tokens)
+            yield {
+                "type": "result",
+                "data": {
+                    "final_response": result.get("final_response", ""),
+                    "intent_chain": result.get("intent_chain"),
+                    "execution_results": result.get("execution_results", {}),
+                }
+            }
+        except Exception as e:
+            yield {
+                "type": "error",
+                "error": str(e)
             }
 
-            for future in concurrent.futures.as_completed(futures):
-                goal = futures[future]
-                try:
-                    result = future.result(timeout=self.config.timeout_seconds)
-                    results.append(result)
-                except concurrent.futures.TimeoutError:
-                    logger.warning("Goal %s timed out", goal.id)
-                    stats.errors.append(f"Timeout: {goal.id}")
-                    results.append(ExecutionResult(
-                        goal_id=goal.id,
-                        status="failed",
-                        result="Execution timeout",
-                        logs=[],
-                        duration_ms=int(self.config.timeout_seconds * 1000),
-                    ))
-                except Exception as e:
-                    logger.error("Goal %s failed: %s", goal.id, e)
-                    stats.errors.append(f"{goal.id}: {str(e)}")
-                    results.append(ExecutionResult(
-                        goal_id=goal.id,
-                        status="failed",
-                        result=str(e),
-                        logs=[],
-                        duration_ms=0,
-                    ))
+    def request_approval(
+        self,
+        thread_id: str,
+        action: str,
+        details: str,
+    ) -> str:
+        """Request human approval.
 
-        return results
+        Args:
+            thread_id: Thread identifier.
+            action: Action to approve.
+            details: Action details.
+
+        Returns:
+            Approval ID.
+        """
+        return self.approval_manager.request_approval(thread_id, action, details)
+
+    def get_pending_approval(self, thread_id: str) -> dict[str, Any] | None:
+        """Get pending approval for thread.
+
+        Args:
+            thread_id: Thread identifier.
+
+        Returns:
+            Pending approval details or None.
+        """
+        return self.approval_manager.get_pending(thread_id)
+
+    def submit_approval(
+        self,
+        thread_id: str,
+        approved: bool,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        """Submit approval and resume pipeline execution.
+
+        Args:
+            thread_id: Thread identifier.
+            approved: True to approve, False to reject.
+            reason: Approval/rejection reason.
+
+        Returns:
+            Updated state after resume.
+        """
+        return self.approval_manager.submit_approval(thread_id, approved, reason)
+
+    def get_checkpointer(self) -> Any:
+        """Get the checkpointer for persistence."""
+        return self.graph.checkpointer
+
+    def get_state_history(self, thread_id: str) -> list[dict[str, Any]]:
+        """Get conversation history for a thread.
+
+        Args:
+            thread_id: Thread identifier.
+
+        Returns:
+            List of checkpoint states.
+        """
+        if not hasattr(self.graph, '_graph') or not self.graph._graph:
+            return []
+
+        try:
+            config = {"configurable": {"thread_id": thread_id}}
+            history = list(self.graph._graph.get_state_history(config))
+            return [
+                {
+                    "config": str(h.config),
+                    "next_nodes": list(h.next) if h.next else [],
+                }
+                for h in history
+            ]
+        except Exception as e:
+            logger.error("Failed to get state history: %s", e)
+            return []
+
+
+# Usage Example:
+"""
+from pipelines.collaboration_pipeline import CollaborationPipeline
+
+# Create pipeline
+pipeline = CollaborationPipeline()
+
+# Simple invoke
+result = pipeline.invoke("帮我搜索AI最新进展")
+print(result["final_response"])
+
+# Streaming
+for chunk in pipeline.stream("搜索天气"):
+    if chunk["type"] == "result":
+        print(chunk["data"]["final_response"])
+    elif chunk["type"] == "error":
+        print(f"Error: {chunk['error']}")
+
+# With HITL
+approval_id = pipeline.request_approval(
+    thread_id="session_123",
+    action="execute_code",
+    details="将执行: rm -rf /tmp/test"
+)
+# ... show approval UI to user ...
+
+# User approves or rejects
+result = pipeline.submit_approval(
+    thread_id="session_123",
+    approved=True,
+    reason="确认执行"
+)
+"""

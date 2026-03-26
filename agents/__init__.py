@@ -1,23 +1,19 @@
-"""Agent implementations for the Multi-Agent Collaboration System."""
+"""Agent implementations (LangGraph ReAct Agents)."""
 
-from core.base_agent import BaseAgent, AgentRole, ContextAssembler, ScopedContext
-
-from agents.intent_agent import IntentAgent
-from agents.planner_agent import PlannerAgent
-from agents.executor_agent import ExecutorAgent
-from agents.synthesizer_agent import SynthesizerAgent
-from agents.types import UserQuery, ExecutionResult, FinalResponse
+from agents.langgraph_agents import BaseReActAgent
+from agents.intent_agent import IntentAgent, create_intent_agent
+from agents.planner_agent import PlannerAgent, create_planner_agent
+from agents.executor_agent import ExecutorAgent, create_executor_agent
+from agents.synthesizer_agent import SynthesizerAgent, create_synthesizer_agent
 
 __all__ = [
-    "BaseAgent",
-    "AgentRole",
-    "ContextAssembler",
-    "ScopedContext",
+    "BaseReActAgent",
     "IntentAgent",
     "PlannerAgent",
     "ExecutorAgent",
     "SynthesizerAgent",
-    "UserQuery",
-    "ExecutionResult",
-    "FinalResponse",
+    "create_intent_agent",
+    "create_planner_agent",
+    "create_executor_agent",
+    "create_synthesizer_agent",
 ]

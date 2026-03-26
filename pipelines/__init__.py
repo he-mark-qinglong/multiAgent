@@ -1,13 +1,5 @@
-"""Pipeline implementations for the Multi-Agent Collaboration System."""
+"""Pipeline orchestration."""
 
-from pipelines.collaboration_pipeline import (
-    CollaborationPipeline,
-    PipelineConfig,
-    PipelineStats,
-)
+from pipelines.collaboration_pipeline import CollaborationPipeline
 
-__all__ = [
-    "CollaborationPipeline",
-    "PipelineConfig",
-    "PipelineStats",
-]
+__all__ = ["CollaborationPipeline"]
