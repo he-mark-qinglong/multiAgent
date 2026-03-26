@@ -4,7 +4,17 @@
 
 ## 1. 架构原则
 
-### 1.1 分层设计
+### 1.1 设计原则
+
+```
+KISS (Keep It Simple, Stupid):
+✅ 优先简单实现，避免过度设计
+✅ 每个模块 < 400 行，每个函数 < 50 行
+✅ 必要时才引入复杂性
+❌ 禁止: 为未来可能的需求添加代码
+```
+
+### 1.2 分层设计
 ```
 ✅ 必须遵循:
   - L0: Intent Agent (意图识别)
@@ -59,10 +69,30 @@ PRIVATE: 仅创建者可见 (LLM_Prompt, Internal_Reasoning)
 ✅ 日志: 使用 logging，禁止 print()
 ```
 
-### 2.3 范围控制
+### 2.3 扩展目录 (预留)
 ```
-当前 Phase 锁定，禁止超出范围开发
-重大决策 (>30分钟) 必须上报 Team Lead
+mcp/                 # MCP (Model Context Protocol) 扩展
+├── __init__.py
+├── mcp_client.py     # MCP 客户端封装
+└── protocols/        # 协议定义
+
+skills/              # Agent Skills 扩展
+├── __init__.py
+├── skill_base.py    # Skill 基类
+└── builtin/         # 内置 Skills
+
+services/            # Per-Request 服务
+├── __init__.py
+├── query_service.py  # 请求处理服务
+└── context_service.py # 上下文管理服务
+```
+
+### 2.4 Per-Request 机制
+```
+QueryService:
+  - 每个请求创建独立实例
+  - 请求级状态隔离
+  - 自动清理请求结束后的资源
 ```
 
 ---
