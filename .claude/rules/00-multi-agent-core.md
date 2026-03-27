@@ -123,12 +123,12 @@ agents/             # Agent实现 (< 400行/文件)
 ├── planner_agent.py      # L1: 计划
 ├── executor_agent.py     # L2+: 执行
 ├── synthesizer_agent.py  # L1: 汇总
-└── monitor_agent.py      # XL: 监控
+└── monitor_agent.py      # XL: 监控 (已实现)
 
 pipelines/         # 执行流水线
 └── collaboration_pipeline.py  # LangGraph Pipeline
 
-prompts/           # Agent prompts 定义
+prompts/           # Agent prompts 定义 (prompts/ 目录)
 ├── system/        # Agent 角色定义
 ├── context/      # 上下文管理
 ├── tools/        # 工具定义

@@ -51,6 +51,7 @@ class BaseAgent(ABC):
   - 多轮意图链追踪
   - 跨话题上下文聚合
   - 隐式意图推断
+Prompt: prompts/system/intent_agent.md
 ```
 
 ### 2.2 PlannerAgent (L1)
@@ -61,6 +62,7 @@ class BaseAgent(ABC):
   - 基于 IntentChain 制定任务计划
   - 分解为 GoalTree
   - 派发 SubGoal 给 Executor
+Prompt: prompts/system/planner_agent.md
 ```
 
 ### 2.3 ExecutorAgent (L2+)
@@ -71,6 +73,7 @@ class BaseAgent(ABC):
   - 执行分配的子目标
   - 报告状态给 Monitor
   - 记录过程日志
+Prompt: prompts/system/executor_agent.md
 ```
 
 ### 2.4 SynthesizerAgent (L1)
@@ -81,6 +84,19 @@ class BaseAgent(ABC):
   - 聚合子目标结果
   - 映射 Goal → Result
   - 生成最终响应
+Prompt: prompts/system/synthesizer_agent.md
+```
+
+### 2.5 MonitorAgent (XL)
+```
+输入: EventBus DeltaUpdate 事件流
+输出: Alert + RecoveryAction
+职责:
+  - 订阅所有状态变更
+  - 检测失败/超时
+  - 触发 Circuit Breaker
+  - 推荐恢复策略
+Prompt: prompts/system/monitor_agent.md
 ```
 
 ## 3. Pipeline Runner
