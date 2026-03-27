@@ -374,9 +374,27 @@ class EmergencyTool:
 
 
 class NewsTool:
-    """新闻工具 - MCP 实现。"""
+    """新闻工具 - MCP 实现。
 
-    def get_news(self) -> ToolResult:
+    故意添加延迟和随机失败，模拟真实 API 场景。
+    用于测试异步处理和 UX 优化。
+    """
+
+    def get_news(self, simulate_delay: bool = True) -> ToolResult:
+        """同步版本 - 阻塞 5 秒。"""
+        if simulate_delay:
+            time.sleep(5)  # 模拟网络延迟
+
+        # 20% 概率随机失败
+        if random.random() < 0.2:
+            return ToolResult(
+                success=False,
+                state={"error": "network_timeout"},
+                description="❌ 新闻获取超时，请稍后重试",
+                tool_name="news",
+                error="News API timeout after 5s"
+            )
+
         items = [
             f"📰 天气: 今日晴朗，气温{22 + random.randint(0, 8)}°C",
             f"🚗 交通: {random.choice(['畅通', '缓慢', '拥堵'])}，预计通勤正常",
@@ -390,3 +408,37 @@ class NewsTool:
             description="📰 今日新闻:\n   " + "\n   ".join(items[:3]),
             tool_name="news"
         )
+
+    async def get_news_async(self) -> ToolResult:
+        """异步版本 - 非阻塞。"""
+        # 模拟异步 API 调用
+        await self._async_sleep(5)
+
+        # 20% 概率随机失败
+        if random.random() < 0.2:
+            return ToolResult(
+                success=False,
+                state={"error": "network_timeout"},
+                description="❌ 新闻获取超时，请稍后重试",
+                tool_name="news",
+                error="News API timeout after 5s"
+            )
+
+        items = [
+            f"📰 天气: 今日晴朗，气温{22 + random.randint(0, 8)}°C",
+            f"🚗 交通: {random.choice(['畅通', '缓慢', '拥堵'])}，预计通勤正常",
+            f"📈 股市: 三大指数{random.choice(['上涨', '下跌'])}",
+            f"📱 科技: AI技术持续发展，多款新品即将发布",
+        ]
+        random.shuffle(items)
+        return ToolResult(
+            success=True,
+            state={"items": items, "count": 3},
+            description="📰 今日新闻:\n   " + "\n   ".join(items[:3]),
+            tool_name="news"
+        )
+
+    async def _async_sleep(self, seconds: float):
+        """异步睡眠。"""
+        import asyncio
+        await asyncio.sleep(seconds)

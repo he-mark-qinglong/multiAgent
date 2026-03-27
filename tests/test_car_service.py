@@ -592,6 +592,10 @@ class TestCarServiceAgents:
 
     def test_mixed_chat_and_car_control(self, orchestrator):
         """测试混合格式: 闲聊 + 车控 + 闲聊 + 车控"""
+        print("\n" + "=" * 50)
+        print("🚗 测试: 闲聊 + 车控 混合对话")
+        print("=" * 50)
+
         queries = [
             ("今天天气不错", "chat"),      # 闲聊
             ("帮我把空调开到24度", "climate"),  # 车控
@@ -602,9 +606,14 @@ class TestCarServiceAgents:
         ]
 
         agents = []
-        for query, expected in queries:
+        for i, (query, expected) in enumerate(queries):
             r = orchestrator.run(query)
-            agents.append((r["agent_id"], expected))
+            actual = r["agent_id"]
+            agents.append((actual, expected))
+            result = r.get("result", {})
+            print(f"\n[轮次 {i+1}]")
+            print(f"  👤 用户: {query}")
+            print(f"  🤖 路由: {actual}")
 
         # 验证路由结果
         for i, (actual, expected) in enumerate(agents):
@@ -612,46 +621,69 @@ class TestCarServiceAgents:
 
         # 验证对话历史
         assert len(orchestrator.conversation_history) == 6
+        print(f"\n✅ 共 {len(orchestrator.conversation_history)} 轮对话")
 
     def test_car_control_with_followup(self, orchestrator):
         """测试车控后的跟进对话"""
+        print("\n" + "=" * 50)
+        print("🌡️ 测试: 空调多轮控制")
+        print("=" * 50)
+
         # 开启空调
         r1 = orchestrator.run("开空调")
         assert r1["agent_id"] == "climate"
+        print(f"\n  👤 用户: 开空调")
+        print(f"  🤖 路由: climate")
 
         # 温度调节
         r2 = orchestrator.run("太冷了，调高一点")
         assert r2["agent_id"] == "climate"
+        print(f"\n  👤 用户: 太冷了，调高一点")
+        print(f"  🤖 路由: climate (上下文感知)")
 
         # 关闭空调
         r3 = orchestrator.run("关掉吧")
         assert r3["agent_id"] == "climate"
+        print(f"\n  👤 用户: 关掉吧")
+        print(f"  🤖 路由: climate (上下文感知)")
 
         # 闲聊过渡
         r4 = orchestrator.run("现在舒服多了")
-        # 闲聊可能返回 chat（上下文感知）
+        print(f"\n  👤 用户: 现在舒服多了")
+        print(f"  🤖 路由: {r4['agent_id']}")
 
         # 检查空调控制至少有3次
         climate_count = sum(1 for h in orchestrator.conversation_history if h["agent"] == "climate")
         assert climate_count >= 3, f"Expected at least 3 climate controls, got {climate_count}"
+        print(f"\n✅ 空调控制: {climate_count} 次")
 
     def test_navigation_multi_turn(self, orchestrator):
         """测试导航多轮对话"""
+        print("\n" + "=" * 50)
+        print("🧭 测试: 导航多轮对话")
+        print("=" * 50)
+
         # 发起导航
         r1 = orchestrator.run("我要去北京站")
         assert r1["agent_id"] == "nav"
+        print(f"\n  👤 用户: 我要去北京站")
+        print(f"  🤖 路由: nav")
 
         # 询问路线
         r2 = orchestrator.run("路上堵车吗")
-        # nav 或 chat（上下文感知）
+        print(f"\n  👤 用户: 路上堵车吗")
+        print(f"  🤖 路由: {r2['agent_id']} (上下文感知)")
 
         # 切换目的地
         r3 = orchestrator.run("算了，改去机场")
         assert r3["agent_id"] == "nav"
+        print(f"\n  👤 用户: 算了，改去机场")
+        print(f"  🤖 路由: nav")
 
         # 取消导航
         r4 = orchestrator.run("算了不去了")
-        # nav 或 chat
+        print(f"\n  👤 用户: 算了不去了")
+        print(f"  🤖 路由: {r4['agent_id']}")
 
     def test_emergency_interrupt_flow(self, orchestrator):
         """测试紧急救援流程"""
