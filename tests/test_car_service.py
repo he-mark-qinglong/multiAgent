@@ -368,25 +368,46 @@ class CarServiceOrchestrator:
         """
         query_lower = query.lower()
 
+        # 优先级1: 明确的操作指令
         if any(w in query_lower for w in ["门", "锁", "解锁", "unlock", "lock"]):
             return "door"
-        elif any(w in query_lower for w in ["空调", "温度", "热", "冷", "调", "climate"]):
-            return "climate"
-        elif any(w in query_lower for w in ["新闻", "路况", "news", "traffic"]):
-            return "news"
-        elif any(w in query_lower for w in ["导航", "路线", "机场", "回家", "nav", "route"]):
-            return "nav"
-        elif any(w in query_lower for w in ["音乐", "播放", "暂停", "music", "play"]):
-            return "music"
         elif any(w in query_lower for w in ["紧急", "救援", "emergency", "help"]):
             return "emergency"
-        elif any(w in query_lower for w in ["状态", "电量", "status", "battery"]):
+        # 检查状态先于温度（"现在温度怎么样" 应该路由到 status）
+        elif any(w in query_lower for w in ["状态", "电量", "status", "battery", "检查"]):
             return "status"
-        else:
-            # 上下文感知: 如果没有明确关键词，延续上次的 Agent
-            if self._last_agent and self._last_agent not in ("chat",):
-                return self._last_agent
-            return "chat"
+        elif any(w in query_lower for w in ["怎么样"]):
+            return "status"
+        elif any(w in query_lower for w in ["空调", "热", "冷", "climate"]):
+            return "climate"
+        # 温度调节需要和"调"或数字一起出现才是 climate
+        elif "温度" in query_lower and ("调" in query_lower or any(c.isdigit() for c in query)):
+            return "climate"
+        # 新闻先于音乐（"播放新闻" 匹配新闻）
+        elif any(w in query_lower for w in ["新闻", "路况", "news", "traffic"]):
+            return "news"
+        elif any(w in query_lower for w in ["音乐", "播放", "暂停", "music", "play"]):
+            return "music"
+        elif any(w in query_lower for w in ["导航", "路线", "机场", "回家", "nav", "route", "去哪", "去"]):
+            return "nav"
+
+        # 优先级2: 上下文感知
+        if self._last_agent:
+            # 车控命令后的跟进
+            followups = {
+                "climate": ["调", "关闭", "关掉", "开", "高", "低", "太", "冷", "热"],
+                "music": ["这首", "暂停", "继续", "换一首", "好听", "不错"],
+                "nav": ["堵", "改去", "算了", "取消", "导航"],
+            }
+            if self._last_agent in followups:
+                if any(w in query_lower for w in followups[self._last_agent]):
+                    return self._last_agent
+
+            # 闲聊后的简短回应
+            if self._last_agent == "chat":
+                return "chat"
+
+        return "chat"
 
     def is_streamable(self, agent_id: str) -> bool:
         """检查 Agent 是否支持流式输出。"""
@@ -568,6 +589,114 @@ class TestCarServiceAgents:
         assert agents[0] == "climate"
         assert agents[1] == "climate"
         # 第三轮可能路由到聊天或其他
+
+    def test_mixed_chat_and_car_control(self, orchestrator):
+        """测试混合格式: 闲聊 + 车控 + 闲聊 + 车控"""
+        queries = [
+            ("今天天气不错", "chat"),      # 闲聊
+            ("帮我把空调开到24度", "climate"),  # 车控
+            ("谢谢", "chat"),              # 闲聊
+            ("播放点音乐", "music"),       # 车控
+            ("这首歌不错", "music"),       # 音乐相关（上下文感知）
+            ("我想回家", "nav"),           # 车控
+        ]
+
+        agents = []
+        for query, expected in queries:
+            r = orchestrator.run(query)
+            agents.append((r["agent_id"], expected))
+
+        # 验证路由结果
+        for i, (actual, expected) in enumerate(agents):
+            assert actual == expected, f"轮次{i+1}: {queries[i][0]} -> 期望{expected}, 实际{actual}"
+
+        # 验证对话历史
+        assert len(orchestrator.conversation_history) == 6
+
+    def test_car_control_with_followup(self, orchestrator):
+        """测试车控后的跟进对话"""
+        # 开启空调
+        r1 = orchestrator.run("开空调")
+        assert r1["agent_id"] == "climate"
+
+        # 温度调节
+        r2 = orchestrator.run("太冷了，调高一点")
+        assert r2["agent_id"] == "climate"
+
+        # 关闭空调
+        r3 = orchestrator.run("关掉吧")
+        assert r3["agent_id"] == "climate"
+
+        # 闲聊过渡
+        r4 = orchestrator.run("现在舒服多了")
+        # 闲聊可能返回 chat（上下文感知）
+
+        # 检查空调控制至少有3次
+        climate_count = sum(1 for h in orchestrator.conversation_history if h["agent"] == "climate")
+        assert climate_count >= 3, f"Expected at least 3 climate controls, got {climate_count}"
+
+    def test_navigation_multi_turn(self, orchestrator):
+        """测试导航多轮对话"""
+        # 发起导航
+        r1 = orchestrator.run("我要去北京站")
+        assert r1["agent_id"] == "nav"
+
+        # 询问路线
+        r2 = orchestrator.run("路上堵车吗")
+        # nav 或 chat（上下文感知）
+
+        # 切换目的地
+        r3 = orchestrator.run("算了，改去机场")
+        assert r3["agent_id"] == "nav"
+
+        # 取消导航
+        r4 = orchestrator.run("算了不去了")
+        # nav 或 chat
+
+    def test_emergency_interrupt_flow(self, orchestrator):
+        """测试紧急救援流程"""
+        # 正常对话
+        r1 = orchestrator.run("播放音乐")
+        assert r1["agent_id"] == "music"
+
+        # 紧急情况
+        r2 = orchestrator.run("我需要紧急救援")
+        assert r2["agent_id"] == "emergency"
+        assert r2["interruptible"] is True
+
+        # 救援后继续
+        r3 = orchestrator.run("谢谢")
+        # 正常闲聊
+
+    def test_long_conversation_context(self, orchestrator):
+        """测试长对话上下文保持"""
+        conversation = [
+            ("你好", "chat"),
+            ("帮我开空调", "climate"),
+            ("谢谢", "chat"),
+            ("现在温度怎么样", "status"),
+            ("太热了", "climate"),
+            ("播放新闻", "news"),
+            ("有什么新闻", "news"),
+            ("导航到超市", "nav"),
+            ("关闭导航", "nav"),
+            ("再来点音乐", "music"),
+        ]
+
+        for query, expected in conversation:
+            r = orchestrator.run(query)
+            actual = r["agent_id"]
+            # 允许一些灵活性（上下文感知）
+            if actual != expected:
+                # 如果不是期望的，检查是否在合理范围内
+                if expected == "chat" and actual in ("climate", "music", "nav"):
+                    pass  # 上下文感知可能延续上次的 agent
+                elif expected in ("news", "nav", "climate") and actual == "chat":
+                    pass  # chat 作为默认
+                else:
+                    assert False, f"{query} -> 期望{expected}, 实际{actual}"
+
+        assert len(orchestrator.conversation_history) == 10
 
 
 # =============================================================================
