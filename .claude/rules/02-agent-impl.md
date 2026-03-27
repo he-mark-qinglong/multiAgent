@@ -1,6 +1,8 @@
 # Agent 实现规范
 
-**版本: 1.0 | 2026-03-27**
+**版本: 1.1 | 2026-03-27**
+
+> Prompts 定义: `prompts/system/{agent_name}.md`
 
 ## 1. Agent 基类接口
 

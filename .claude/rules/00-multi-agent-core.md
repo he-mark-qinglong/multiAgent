@@ -1,6 +1,6 @@
 # 多Agent系统核心规则
 
-**版本: 1.1 | 2026-03-27**
+**版本: 2.0 | 2026-03-27**
 
 ---
 
@@ -42,17 +42,21 @@
 ✅ 所有 Agent 必须继承 BaseReActAgent (支持 ReAct 模式)
 ✅ Pipeline 必须使用 LangGraph 而非手动编排
 
-文件结构:
-agents/
-├── langgraph_agents.py   # LangGraph ReAct Agent 基类
-├── intent_agent.py        # 保留兼容，内部使用 LangGraph
-├── planner_agent.py       # 同上
-└── ...
-
 ❌ 禁止: 使用手动 ThreadPoolExecutor 或手动状态传递
 ```
 
-### 1.3 LangSmith 可观测性 (强制)
+### 1.3 ReAct + Stream + Interrupt (核心设计)
+```
+✅ ReAct 循环: 内部完整推理，保证一致性
+✅ Stream 分离: stream() 只输出最终结构化结果，不输出中间步骤
+✅ Interrupt: HITL 人工介入审批点，interrupt() 暂停执行
+✅ Session/Working Context 分离: Checkpointer 持久化 + StateGraph 工作上下文
+✅ Context 压缩: 长对话支持
+
+详情见 01-state-sync.md
+```
+
+### 1.4 LangSmith 可观测性 (强制)
 ```
 ✅ 所有 Agent 必须集成 LangSmith tracing
 ✅ 使用 LangSmithTracer 记录:
@@ -61,41 +65,15 @@ agents/
    - 错误追踪
    - 对话历史回放
 
-✅ 配置通过环境变量:
-   LANGSMITH_API_KEY=xxx
-   LANGSMITH_PROJECT=multi-agent
+配置: LANGSMITH_API_KEY, LANGSMITH_PROJECT
 ```
 
-### 1.4 流式输出 (强制)
-```
-✅ 所有 Agent 必须支持 stream() 方法
-✅ 使用 LangGraph stream_mode="messages" 输出
-✅ 支持实时 token 显示
-```
-
-### 1.5 异步模型 (ADR-001)
-```
-核心层: 同步 + threading.RLock (StateStore, EventBus)
-Agent层: async/await
-桥接: asyncio.create_task
-LangGraph: 内置异步支持
-```
-
-### 1.6 状态同步
+### 1.5 状态同步原则
 ```
 ✅ DeltaUpdate: 增量同步，禁止全量广播
 ✅ 上下文隔离: 每个Agent只看到必要的最小上下文
 ✅ 订阅规则: 根据 Agent 角色订阅相关状态
 ✅ 权限控制: PUBLIC/PROTECTED/PRIVATE 三级可见性
-```
-
-### 1.7 核心设计 (详见 04-architecture-principles.md)
-```
-✅ ReAct 循环: 内部推理，保证一致性
-✅ Stream 分离: 外层展示最终结构化结果
-✅ Interrupt: HITL 人工介入审批点
-✅ Session/Working Context 分离
-✅ Context 压缩: 长对话支持
 ```
 
 ---
@@ -118,32 +96,12 @@ LangGraph: 内置异步支持
 ✅ 日志: 使用 logging，禁止 print()
 ```
 
-### 2.3 依赖管理
+### 2.3 扩展目录
 ```
-✅ 核心依赖必须写入 requirements.txt:
-   langgraph>=0.2.0
-   langchain-core>=0.3.0
-   langsmith (可选，用于可观测性)
-
-❌ 禁止: 在代码中硬编码依赖版本
-```
-
-### 2.4 扩展目录 (预留)
-```
-mcp/                 # MCP (Model Context Protocol) 扩展
-├── __init__.py
-├── mcp_client.py     # MCP 客户端封装
-└── protocols/        # 协议定义
-
-skills/              # Agent Skills 扩展
-├── __init__.py
-├── skill_base.py    # Skill 基类
-└── builtin/         # 内置 Skills
-
-services/            # Per-Request 服务
-├── __init__.py
-├── query_service.py  # 请求处理服务
-└── context_service.py # 上下文管理服务
+prompts/              # Agent prompts 定义 (见下方详细说明)
+mcp/                  # MCP 扩展
+skills/               # Agent Skills 扩展
+services/             # Per-Request 服务
 ```
 
 ---
@@ -151,17 +109,16 @@ services/            # Per-Request 服务
 ## 3. 文件结构
 
 ```
-core/               # 核心框架
-├── models.py       # 数据模型 (IntentNode, GoalTree, Plan, DeltaUpdate)
+core/               # 核心框架 (< 600行/文件)
+├── models.py       # 数据模型
 ├── state_store.py  # 状态存储
 ├── event_bus.py    # 事件总线
-├── base_agent.py  # Agent基类 (同步版本，兼容用)
-├── langgraph_integration.py  # LangGraph 编排
+├── langgraph_integration.py  # LangGraph 编排 + HITL
 ├── langsmith_integration.py  # LangSmith 可观测性
 └── state_list.py   # 共享状态列表
 
-agents/             # Agent实现
-├── langgraph_agents.py   # LangGraph ReAct Agent 基类
+agents/             # Agent实现 (< 400行/文件)
+├── langgraph_agents.py   # BaseReActAgent 基类
 ├── intent_agent.py       # L0: 意图识别
 ├── planner_agent.py      # L1: 计划
 ├── executor_agent.py     # L2+: 执行
@@ -171,7 +128,65 @@ agents/             # Agent实现
 pipelines/         # 执行流水线
 └── collaboration_pipeline.py  # LangGraph Pipeline
 
-docs/
-├── plans/         # 设计文档
-└── decisions/     # ADR记录
+prompts/           # Agent prompts 定义
+├── system/        # Agent 角色定义
+├── context/      # 上下文管理
+├── tools/        # 工具定义
+└── teams/        # Team 协作定义
+```
+
+---
+
+## 4. Prompts 目录结构
+
+Agent 的所有 prompt 定义必须放在 `prompts/` 目录中，分类管理。
+
+### 4.1 目录结构
+```
+prompts/
+├── system/              # Agent 角色定义 (system prompt)
+│   ├── intent_agent.md
+│   ├── planner_agent.md
+│   ├── executor_agent.md
+│   ├── synthesizer_agent.md
+│   └── monitor_agent.md
+│
+├── context/             # 上下文模板
+│   ├── session_start.md
+│   ├── session_end.md
+│   └── compression.md   # 长对话压缩提示
+│
+├── tools/               # 工具定义 (tool prompt/MCP skill)
+│   ├── tool_base.md
+│   ├── mcp/
+│   │   └── *.md
+│   └── skills/
+│       └── *.md
+│
+└── teams/               # Team 协作定义
+    ├── coordination.md
+    └── handoff.md
+```
+
+### 4.2 分类规范
+
+| 类别 | 用途 | 加载时机 |
+|------|------|----------|
+| `system/` | 定义 Agent 角色、能力边界、行为准则 | Agent 初始化时 |
+| `context/` | 会话开始/结束模板、压缩提示 | 每次调用时注入 |
+| `tools/` | 工具描述、MCP 协议、Skill 定义 | 按需加载 |
+| `teams/` | Team 协调规则、交接协议 | 多 Agent 协作时 |
+
+### 4.3 命名规范
+```
+{agent_name}/{purpose}.md
+例: system/intent_agent.md, tools/mcp_weather.md
+```
+
+### 4.4 Prompts 加载原则
+```
+✅ Prompts 作为模板字符串加载，不硬编码在 Python 代码中
+✅ 每个 Agent 的 system prompt 在 prompts/system/{agent_name}.md 定义
+✅ 工具描述在 prompts/tools/ 下按协议分类
+✅ Team 协作规则在 prompts/teams/ 下定义
 ```

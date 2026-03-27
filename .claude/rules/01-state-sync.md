@@ -1,12 +1,36 @@
-# 状态同步规范
+# 状态同步与 HITL 规范
 
 **版本: 2.0 | 2026-03-27**
 
-> **重要更新**: LangGraph Checkpointer 现为默认持久化机制，DeltaUpdate 作为外部通知补充。
+---
 
-## 1. LangGraph Checkpointer (主编排)
+## 1. 状态层职责划分
 
-### 1.1 配置
+```
+┌─────────────────────────────────────────────────────┐
+│  Layer 1: LangGraph (编排 + 持久化)                  │
+│  - StateGraph: Working Context                      │
+│  - Checkpointer: Session 持久化 (thread_id 隔离)   │
+│  - ReAct 循环: 内部推理，完整执行                    │
+└─────────────────────────────────────────────────────┘
+                         ↕ DeltaUpdate
+┌─────────────────────────────────────────────────────┐
+│  Layer 2: DeltaUpdate + EventBus (外部通知)          │
+│  - 发布 Agent 间状态变化给外部订阅者                  │
+│  - Monitor 跨 Agent 状态监控                         │
+│  - 外部系统集成 (WebSocket UI, Monitoring)           │
+└─────────────────────────────────────────────────────┘
+```
+
+| 组件 | 职责 | 触发时机 |
+|------|------|----------|
+| **Checkpointer** | LangGraph 内部状态持久化，resume 恢复 | 每个 super-step 自动 |
+| **DeltaUpdate** | Agent 间外部通知，EventBus 发布 | 显式调用 `_emit_delta()` |
+
+---
+
+## 2. LangGraph Checkpointer
+
 ```
 ✅ InMemorySaver: 开发环境
 ✅ PostgresSaver: 生产环境
@@ -14,18 +38,9 @@
 每个对话使用 thread_id 隔离状态
 ```
 
-### 1.2 持久化流程
-```
-Agent 状态更新 → StateGraph 更新 → Checkpointer 自动保存
-```
-
 ---
 
-## 2. DeltaUpdate (外部通知)
-
-> DeltaUpdate 保留用于 Agent 间外部通知和 Monitor 监控。
-
-### 2.1 DeltaUpdate 格式
+## 3. DeltaUpdate 格式
 
 ```python
 @dataclass
@@ -40,23 +55,71 @@ class DeltaUpdate:
     source_agent: str          # 发起更新的Agent
 ```
 
-### 2.2 发布时机
+---
+
+## 4. LangGraph HITL 机制
+
+### 4.1 中断触发条件
 ```
-✅ Agent 状态变化后发布到 EventBus
-✅ Monitor 订阅所有 DeltaUpdate
-❌ 内部 ReAct 循环不触发 (由 LangGraph 管理)
+✅ 执行危险操作前 (如删除、修改)
+✅ 需要人工确认的决策点
+✅ 外部系统回调
+❌ 常规推理过程
 ```
 
-### 2.3 订阅规则
+### 4.2 中断流程
+```
+executor_node 检测 needs_approval=True
+    ↓
+interrupt("请确认操作...")
+    ↓
+状态保存到 Checkpointer
+    ↓
+返回待审批信息给客户端
+    ↓
+submit_approval() → Command(resume={...})
+    ↓
+executor_node 恢复执行
+```
 
-| Agent | 订阅内容 |
-|-------|----------|
-| Monitor Agent | 所有 DeltaUpdate (全量监控) |
-| 外部系统 | 可订阅特定 entity_type |
+### 4.3 HumanApprovalManager
+```python
+class HumanApprovalManager:
+    def request_approval(self, thread_id, action, details) -> str
+    def submit_approval(self, thread_id, approved, reason) -> dict
+    def get_pending(self, thread_id) -> dict | None
+```
+
+### 4.4 stream() 输出规范
+```
+✅ 正确: ReAct 完整执行 → 输出结构化结果
+def stream(self, query):
+    result = self._run_full_react_cycle(query)
+    yield {"type": "result", "data": result}
+
+❌ 错误: 输出中间步骤
+def stream(self, query):
+    for step in self.react_steps:
+        yield step  # 破坏 ReAct 一致性
+```
+
+流式类型: `result`, `progress`, `approval_required`, `error`, `interrupt`
 
 ---
 
-## 3. 上下文作用域
+## 5. 订阅规则
+
+| Agent | 订阅内容 |
+|-------|----------|
+| Intent Agent | IntentChain 变更 |
+| Planner Agent | IntentChain 变更 |
+| Executor Agent | 分配给自己的 Goal 变更 |
+| Monitor Agent | 所有 Status 变更 |
+| Synthesizer Agent | GoalTree 完成事件 |
+
+---
+
+## 6. 上下文作用域
 
 ```
 Intent Agent:    [Query] + [Intent链(最多5条)] + [历史摘要]
@@ -68,7 +131,7 @@ Synthesizer:     [完整GoalTree] + [所有SubGoalResults]
 
 ---
 
-## 4. 长对话 Token 控制
+## 7. 长对话 Token 控制
 
 | 对话阶段 | 策略 |
 |----------|------|
@@ -76,19 +139,21 @@ Synthesizer:     [完整GoalTree] + [所有SubGoalResults]
 | 20-50轮 | Checkpointer 压缩，保留最近 checkpoint |
 | 50轮+ | LangGraph get_state_history() 回溯 + 增量压缩 |
 
+压缩触发: Token 达到 context window 80%
+
 ---
 
-## 5. 架构整合
+## 8. Agent 协作模式
 
+### 8.1 两种主要模式
+
+| 模式 | 描述 | 适用场景 |
+|------|------|----------|
+| **Agents as Tools** | 根 Agent 把子 Agent 当函数调用 | 简单任务分解 |
+| **Agent Transfer** | 移交控制权，子 Agent 继承有限上下文 | 复杂多轮协作 |
+
+### 8.2 上下文移交 (Scoped Handoffs)
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    LangGraph StateGraph                      │
-│  Checkpointer 持久化 + ReAct 循环 + Edges                   │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼ DeltaUpdate
-┌─────────────────────────────────────────────────────────────┐
-│                      EventBus                                │
-│  外部通知 + Monitor 订阅 + 跨 Agent 通信                      │
-└─────────────────────────────────────────────────────────────┘
+include_contents: [intent_chain, current_goal]  # 仅必要的
+exclude: [internal_reasoning, raw_history]     # 排除敏感的
 ```
