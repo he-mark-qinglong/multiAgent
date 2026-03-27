@@ -24,15 +24,79 @@ from typing import Any
 class SimpleAgent:
     """简化 Agent，用于演示多轮对话路由。"""
 
-    def __init__(self, agent_id: str, name: str, respond_template: str):
+    # Agent 回复模板
+    RESPONSES = {
+        "chat": [
+            "好的，我明白了。",
+            "没问题，有什么可以帮您的？",
+            "好的，继续说。",
+            "明白了，请讲。",
+            "收到，还有什么需要吗？",
+        ],
+        "climate": {
+            "开": "好的，已开启空调。",
+            "关": "好的，已关闭空调。",
+            "调": "已为您调节温度。",
+            "热": "已调低温度制冷。",
+            "冷": "已调高温度制热。",
+            "default": "空调已为您调整到舒适温度。",
+        },
+        "music": {
+            "播放": "好的，正在为您播放音乐。",
+            "这首": "谢谢欣赏，这首歌确实不错。",
+            "暂停": "已暂停播放。",
+            "继续": "已继续播放。",
+            "default": "音乐播放中...",
+        },
+        "nav": {
+            "去": "已为您规划路线，正在导航。",
+            "堵": "当前路况畅通，预计30分钟到达。",
+            "改": "好的，已为您重新规划路线。",
+            "取消": "已取消导航。",
+            "default": "导航已设置。",
+        },
+        "news": {
+            "default": "今日新闻：1. 天气晴朗 2. 交通顺畅 3. 股市上涨",
+        },
+        "status": {
+            "default": "车辆状态良好：电量 85%，温度 22°C，行驶里程 120km",
+        },
+        "emergency": {
+            "default": "⚠️ 已收到紧急求助请求，正在为您联系紧急救援服务，请保持通话。",
+        },
+    }
+
+    def __init__(self, agent_id: str, name: str, respond_template: str = ""):
         self.agent_id = agent_id
         self.name = name
-        self.respond_template = respond_template
+
+    def _get_response(self, query: str) -> str:
+        """根据 query 内容和 Agent 类型生成智能回复。"""
+        query_lower = query.lower()
+
+        # Chat Agent 随机回复
+        if self.agent_id == "chat":
+            import random
+            return random.choice(self.RESPONSES["chat"])
+
+        # Emergency Agent
+        if self.agent_id == "emergency":
+            return self.RESPONSES["emergency"]["default"]
+
+        # 其他 Agent 关键词匹配
+        agent_responses = self.RESPONSES.get(self.agent_id, {})
+        for keyword, response in agent_responses.items():
+            if keyword != "default" and keyword in query_lower:
+                return response
+
+        return agent_responses.get("default", f"[{self.name}] 已处理: {query}")
 
     def run(self, query: str) -> dict[str, Any]:
+        response = self._get_response(query)
         return {
-            "final_response": self.respond_template.format(query=query),
+            "final_response": response,
             "agent_id": self.agent_id,
+            "agent_name": self.name,
         }
 
     def stream(self, query: str):
@@ -55,14 +119,14 @@ class CarServiceOrchestrator:
 
         # 初始化 Agent
         self.agents = {
-            "door": SimpleAgent("door", "车门控制", "车门已{query}"),
-            "climate": SimpleAgent("climate", "空调控制", "空调已{query}"),
-            "chat": SimpleAgent("chat", "闲聊", "好的，{query}"),
-            "news": SimpleAgent("news", "新闻", "今天的新闻：{query}"),
-            "nav": SimpleAgent("nav", "导航", "导航到：{query}"),
-            "music": SimpleAgent("music", "音乐", "播放音乐：{query}"),
-            "emergency": SimpleAgent("emergency", "紧急救援", "紧急救援：{query}"),
-            "status": SimpleAgent("status", "车辆状态", "车辆状态：{query}"),
+            "door": SimpleAgent("door", "车门控制"),
+            "climate": SimpleAgent("climate", "空调控制"),
+            "chat": SimpleAgent("chat", "闲聊"),
+            "news": SimpleAgent("news", "新闻"),
+            "nav": SimpleAgent("nav", "导航"),
+            "music": SimpleAgent("music", "音乐"),
+            "emergency": SimpleAgent("emergency", "紧急救援"),
+            "status": SimpleAgent("status", "车辆状态"),
         }
 
     def route_to_agent(self, query: str) -> str:
@@ -146,10 +210,11 @@ def demo_mixed_conversation():
 
     for i, query in enumerate(queries, 1):
         r = orchestrator.run(query)
+        result = r['result']
         print(f"\n[轮次 {i}]")
         print(f"  👤 用户: {query}")
-        print(f"  🤖 路由: {r['agent_id']}")
-        print(f"  📝 回复: {r['result']['final_response']}")
+        print(f"  🤖 路由: {r['agent_id']} ({result.get('agent_name', '')})")
+        print(f"  🤖 回复: {result['final_response']}")
 
     print(f"\n📊 统计: 共 {len(orchestrator.conversation_history)} 轮")
 
@@ -169,11 +234,13 @@ def demo_climate_control():
 
     for i, (query, action) in enumerate(queries, 1):
         r = orchestrator.run(query)
+        result = r['result']
         is_context = i > 1 and r["agent_id"] == "climate"
         context_note = " ← 上下文感知" if is_context else ""
         print(f"\n[轮次 {i}] {action}")
         print(f"  👤 用户: {query}")
-        print(f"  🤖 路由: {r['agent_id']}{context_note}")
+        print(f"  🤖 路由: {r['agent_id']} ({result.get('agent_name', '')}){context_note}")
+        print(f"  🤖 回复: {result['final_response']}")
 
 
 def demo_navigation():
@@ -191,11 +258,13 @@ def demo_navigation():
 
     for i, (query, action) in enumerate(queries, 1):
         r = orchestrator.run(query)
+        result = r['result']
         is_context = i > 1 and r["agent_id"] == "nav"
         context_note = " ← 上下文感知" if is_context else ""
         print(f"\n[轮次 {i}] {action}")
         print(f"  👤 用户: {query}")
-        print(f"  🤖 路由: {r['agent_id']}{context_note}")
+        print(f"  🤖 路由: {r['agent_id']} ({result.get('agent_name', '')}){context_note}")
+        print(f"  🤖 回复: {result['final_response']}")
 
 
 def demo_long_conversation():
@@ -219,9 +288,11 @@ def demo_long_conversation():
 
     for i, (query, purpose) in enumerate(conversation, 1):
         r = orchestrator.run(query)
+        result = r['result']
         print(f"\n[轮次 {i}] ({purpose})")
         print(f"  👤 用户: {query}")
-        print(f"  🤖 路由: {r['agent_id']}")
+        print(f"  🤖 路由: {r['agent_id']} ({result.get('agent_name', '')})")
+        print(f"  🤖 回复: {result['final_response']}")
 
     # 统计
     print("\n" + "-" * 40)
@@ -243,19 +314,24 @@ def demo_emergency_flow():
 
     # 正常对话
     r = orchestrator.run("播放音乐")
+    result = r['result']
     print(f"  👤 用户: 播放音乐")
-    print(f"  🤖 路由: {r['agent_id']}")
+    print(f"  🤖 路由: {r['agent_id']} ({result.get('agent_name', '')})")
+    print(f"  🤖 回复: {result['final_response']}")
 
     # 紧急情况
     r = orchestrator.run("我需要紧急救援")
+    result = r['result']
     print(f"\n  👤 用户: 我需要紧急救援")
-    print(f"  🤖 路由: {r['agent_id']} ⚠️ 紧急!")
-    print(f"  📝 回复: {r['result']['final_response']}")
+    print(f"  🤖 路由: {r['agent_id']} ({result.get('agent_name', '')}) ⚠️ 紧急!")
+    print(f"  🤖 回复: {result['final_response']}")
 
     # 救援后
     r = orchestrator.run("谢谢")
+    result = r['result']
     print(f"\n  👤 用户: 谢谢")
-    print(f"  🤖 路由: {r['agent_id']}")
+    print(f"  🤖 路由: {r['agent_id']} ({result.get('agent_name', '')})")
+    print(f"  🤖 回复: {result['final_response']}")
 
 
 def demo_routing_debug():
