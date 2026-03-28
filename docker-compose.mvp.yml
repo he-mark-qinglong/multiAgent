@@ -1,0 +1,46 @@
+# MVP: 前后端一体化部署
+# 用法: docker compose -f docker-compose.mvp.yml up --build
+
+services:
+  # ── 后端 API ────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: car-assistant-api:latest
+    container_name: car-assistant-api
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PYTHONPATH=/app
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - car-assistant-net
+
+  # ── 前端 UI ────────────────────────────────────────────────
+  ui:
+    build:
+      context: ../car-assistant-ui
+      dockerfile: Dockerfile
+    image: car-assistant-ui:latest
+    container_name: car-assistant-ui
+    ports:
+      - "80:80"
+    environment:
+      - VITE_API_URL=http://api:8000/api
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - car-assistant-net
+
+networks:
+  car-assistant-net:
+    driver: bridge
