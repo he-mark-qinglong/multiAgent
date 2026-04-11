@@ -137,3 +137,12 @@ class StreamChunk(BaseModel):
     type: str  # 'result' | 'progress' | 'approval_required' | 'error' | 'interrupt'
     data: dict[str, Any] | None = None
     error: str | None = None
+
+
+class ExecutionResult(BaseModel):
+    """Result from an executor agent."""
+    agent_id: str
+    status: str  # 'success' | 'partial' | 'failed' | 'stub'
+    output: str
+    artifacts: dict[str, Any] = Field(default_factory=dict)
+    error: str | None = None

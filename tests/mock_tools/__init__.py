@@ -39,17 +39,20 @@ class ToolResult:
 MCP_TOOLS = {
     "climate_control": {
         "name": "climate_control",
-        "description": "控制车载空调系统",
+        "description": "控制车载空调系统（开/关/调温度/调风速）",
         "category": "vehicle_control",
         "parameters": {
-            "action": {
-                "type": "string",
-                "enum": ["turn_on", "turn_off", "set_temperature", "set_fan_speed", "get_status"],
-                "description": "操作类型"
+            "power": {
+                "type": "boolean",
+                "description": "电源: true=开, false=关"
             },
-            "value": {
-                "type": "number | string",
-                "description": "操作值 (温度: 16-30, 风速: low/medium/high/auto)"
+            "temperature": {
+                "type": "number",
+                "description": "温度: 16-30°C"
+            },
+            "fan_speed": {
+                "type": "string",
+                "description": "风速: low/medium/high/auto"
             }
         },
         "returns": {
@@ -168,6 +171,11 @@ MCP_TOOLS = {
         "description": "获取新闻资讯",
         "category": "information",
         "parameters": {
+            "action": {
+                "type": "string",
+                "enum": ["get_news"],
+                "description": "操作类型，必须是 get_news"
+            },
             "category": {"type": "string", "description": "新闻类别"}
         },
         "returns": {

@@ -68,6 +68,8 @@ class ToolRegistry:
             "set_temperature": lambda: tool.set_temperature(int(kwargs.get("value", 24))),
             "set_fan_speed": lambda: tool.set_fan_speed(str(kwargs.get("value", "auto"))),
             "get_status": lambda: tool.get_status(),
+            # ClimateTool 新格式: power, temperature, fan_speed
+            "control": lambda: self._climate_control(tool, kwargs),
             # NavigationTool
             "navigate": lambda: tool.navigate_to(kwargs.get("destination", "")),
             "get_traffic": lambda: tool.get_traffic(),
@@ -105,6 +107,29 @@ class ToolRegistry:
                 tool_name=name,
                 error=str(e),
             )
+
+    def _climate_control(self, tool, kwargs) -> ToolResult:
+        """处理 climate_control 的复合参数 (power, temperature, fan_speed)。"""
+        power = kwargs.get("power")
+        temperature = kwargs.get("temperature")
+        fan_speed = kwargs.get("fan_speed")
+
+        # 如果指定了 power，先开/关空调
+        if power is not None:
+            if power:
+                tool.turn_on(temperature)
+            else:
+                tool.turn_off()
+
+        # 如果指定了温度
+        if temperature is not None:
+            tool.set_temperature(temperature)
+
+        # 如果指定了风速
+        if fan_speed is not None:
+            tool.set_fan_speed(fan_speed)
+
+        return tool.get_status()
 
 
 # 全局单例

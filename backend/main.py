@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from backend.tools import registry
+from core.minimax_client import get_minimax_client, INTENT_SYSTEM_PROMPT, INTENT_USER_PROMPT
+from tests.mock_tools import MCP_TOOLS
 
 app = FastAPI(title="智能车载助手 API", version="1.0.0")
 
@@ -44,42 +46,105 @@ class ChatRequest(BaseModel):
 # 模拟对话引擎 (ReAct 模式)
 # ============================================================================
 
-async def simulate_reasoning(message: str, session_id: str) -> AsyncGenerator[dict, None]:  # noqa: ARG001
-    """模拟 ReAct 推理过程，通过 SSE 流式输出。
+async def llm_reasoning(message: str, session_id: str) -> AsyncGenerator[dict, None]:  # noqa: ARG001
+    """LLM驱动的 ReAct 推理过程，通过 SSE 流式输出。
+
+    使用 MiniMax API 进行意图识别和工具选择。
 
     Yields:
         SSE 格式的 dict: {"event": <type>, "data": <json>}
     """
-    msg_lower = message.lower()
-
     # --- 推理步骤: Think ---
     yield {"event": "think", "data": json.dumps({"content": "正在分析用户请求..."}, ensure_ascii=False)}
     await asyncio.sleep(0.3)
 
-    # --- 意图识别 ---
+    try:
+        # --- 获取 LLM 客户端 ---
+        client = get_minimax_client()
+        tools = client.format_tools(MCP_TOOLS)
+
+        # --- 调用 LLM ---
+        yield {"event": "think", "data": json.dumps({"content": "正在调用 LLM 进行意图识别..."}, ensure_ascii=False)}
+
+        messages = [
+            {"role": "user", "content": INTENT_USER_PROMPT.format(message=message)}
+        ]
+
+        response = await client.chat(
+            messages=messages,
+            tools=tools,
+            system_prompt=INTENT_SYSTEM_PROMPT,
+        )
+
+        # --- 解析 LLM 响应 ---
+        tool_name, action, tool_input = client.parse_tool_call(response)
+
+        if tool_name:
+            yield {"event": "think", "data": json.dumps({
+                "content": f"LLM 识别为: {tool_name}.{action}, 参数: {tool_input}"
+            }, ensure_ascii=False)}
+
+            # --- 执行工具 ---
+            safe_action = action or "get_status"
+            yield {"event": "action", "data": json.dumps({
+                "content": f"调用工具: {tool_name}.{safe_action}",
+                "params": tool_input,
+            }, ensure_ascii=False)}
+            await asyncio.sleep(0.2)
+
+            # 从 tool_input 中提取参数（除了 action）
+            kwargs = {k: v for k, v in (tool_input or {}).items() if k != "action"}
+            result = registry.call_tool(tool_name, safe_action, **kwargs)
+
+            # 详细的诊断信息
+            observation_data = {
+                "tool": tool_name,
+                "action": safe_action,
+                "params": kwargs,
+                "success": result.success,
+                "state": result.state,
+                "description": result.description,
+            }
+            if result.error:
+                observation_data["error"] = result.error
+
+            yield {"event": "observation", "data": json.dumps(observation_data, ensure_ascii=False)}
+            await asyncio.sleep(0.2)
+
+            # --- 最终回复 ---
+            yield {"event": "result", "data": json.dumps({"content": result.description}, ensure_ascii=False)}
+        else:
+            # LLM 没有选择工具
+            yield {"event": "think", "data": json.dumps({"content": "LLM 未识别到具体工具，将直接回复..."}, ensure_ascii=False)}
+            response_text = _build_response(message, None)
+            yield {"event": "result", "data": json.dumps({"content": response_text}, ensure_ascii=False)}
+
+    except Exception as e:
+        # LLM 调用失败，降级到关键词匹配
+        yield {"event": "think", "data": json.dumps({"content": f"LLM 调用失败: {e}，降级到关键词匹配..."}, ensure_ascii=False)}
+        async for event in _fallback_keyword_reasoning(message):
+            yield event
+
+    yield {"event": "done", "data": json.dumps({"timestamp": time.time()}, ensure_ascii=False)}
+
+
+async def _fallback_keyword_reasoning(message: str) -> AsyncGenerator[dict, None]:
+    """降级方案：关键词匹配（当 LLM 不可用时）"""
+    msg_lower = message.lower()
+
     if any(k in msg_lower for k in ["温度", "空调", "冷", "热"]):
         tool_name, action = "climate_control", "get_status"
-        yield {"event": "think", "data": json.dumps({"content": f"识别为空调控制请求，执行 {action}..."}, ensure_ascii=False)}
     elif any(k in msg_lower for k in ["导航", "去", "路线", "怎么走"]):
         tool_name, action = "navigation", "get_traffic"
-        dest = message.replace("导航", "").replace("去", "").strip()
-        yield {"event": "think", "data": json.dumps({"content": f"识别为导航请求，目的地: {dest or '未指定'}"}, ensure_ascii=False)}
     elif any(k in msg_lower for k in ["音乐", "播放", "暂停", "切歌"]):
         tool_name, action = "music_player", "play"
-        yield {"event": "think", "data": json.dumps({"content": "识别为音乐控制请求..."}, ensure_ascii=False)}
     elif any(k in msg_lower for k in ["状态", "电量", "续航", "车况"]):
         tool_name, action = "vehicle_status", "get_status"
-        yield {"event": "think", "data": json.dumps({"content": "识别为车辆状态查询..."}, ensure_ascii=False)}
     elif any(k in msg_lower for k in ["新闻", "天气", "资讯"]):
         tool_name, action = "news", "get_news"
-        yield {"event": "think", "data": json.dumps({"content": "识别为新闻请求（注意：需等待5秒）..."}, ensure_ascii=False)}
     else:
         tool_name, action = None, None
-        yield {"event": "think", "data": json.dumps({"content": "未识别到具体工具，将直接回复..."}, ensure_ascii=False)}
 
-    await asyncio.sleep(0.4)
-
-    # --- 执行工具 ---
     if tool_name:
         safe_action = action or "get_status"
         yield {"event": "action", "data": json.dumps({"content": f"调用工具: {tool_name}.{safe_action}"}, ensure_ascii=False)}
@@ -93,10 +158,9 @@ async def simulate_reasoning(message: str, session_id: str) -> AsyncGenerator[di
         }, ensure_ascii=False)}
         await asyncio.sleep(0.2)
 
-    # --- 最终回复 ---
-    response_text = _build_response(message, tool_name)
-    yield {"event": "result", "data": json.dumps({"content": response_text}, ensure_ascii=False)}
-    yield {"event": "done", "data": json.dumps({"timestamp": time.time()}, ensure_ascii=False)}
+        yield {"event": "result", "data": json.dumps({"content": result.description}, ensure_ascii=False)}
+    else:
+        yield {"event": "result", "data": json.dumps({"content": _build_response(message, None)}, ensure_ascii=False)}
 
 
 def _build_response(message: str, tool_name: str | None) -> str:  # noqa: ARG001
@@ -144,6 +208,24 @@ async def call_tool(tool_name: str, action: str = "get_status"):
 # 聊天端点 (SSE 流式响应)
 # ============================================================================
 
+@app.get("/api/chat")
+async def chat_get(message: str, session_id: str | None = None):
+    """聊天端点 - SSE 流式响应 (GET)。
+
+    通过 GET + query 参数触发 SSE 流。
+    """
+    sid = session_id or str(uuid.uuid4())
+
+    async def event_generator() -> AsyncGenerator[dict, None]:
+        async for event in llm_reasoning(message, sid):
+            yield {
+                "event": event.get("event", "message"),
+                "data": event.get("data", json.dumps(event, ensure_ascii=False)),
+            }
+
+    return EventSourceResponse(event_generator(), media_type="text/event-stream")
+
+
 @app.get("/api/health")
 async def health():
     """健康检查。"""
@@ -160,7 +242,7 @@ async def chat(request: ChatRequest):
 
     async def event_generator() -> AsyncGenerator[dict, None]:
         # 逐事件流式输出
-        async for event in simulate_reasoning(request.message, sid):
+        async for event in llm_reasoning(request.message, sid):
             yield {
                 "event": event.get("event", "message"),
                 "data": event.get("data", json.dumps(event, ensure_ascii=False)),

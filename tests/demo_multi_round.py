@@ -117,7 +117,7 @@ class ToolExecutor:
                 return self.door.get_status()
 
         elif agent_id == "emergency":
-            return self.emergency.call_emergency(query)
+            return self.emergency.call(query)
 
         else:
             return ToolResult(

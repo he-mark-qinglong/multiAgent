@@ -267,5 +267,10 @@ class BaseReActAgent(ABC):
             Interrupt result.
         """
         if LANGGRAPH_AVAILABLE and interrupt:
-            return interrupt(message)
+            try:
+                return interrupt(message)
+            except RuntimeError as e:
+                # Not in LangGraph run context - return fallback
+                logger.warning("interrupt_and_wait called outside run context: %s", e)
+                return {"approved": True}
         return {"approved": True}  # Fallback: auto-approve

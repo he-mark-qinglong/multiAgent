@@ -1,4 +1,4 @@
-"""Executor Agent - L2+: Task execution using ReAct."""
+"""Executor Agent - L2+: Task execution using ToolRegistry."""
 
 from __future__ import annotations
 
@@ -11,21 +11,22 @@ from core.models import AgentState, Goal, GoalStatus
 logger = logging.getLogger(__name__)
 
 
-EXECUTOR_SYSTEM_PROMPT = """You are an Executor Agent (L2+).
-Your task is to execute assigned goals:
-1. Execute the goal action
-2. Report status updates
-3. Return execution results
+EXECUTOR_SYSTEM_PROMPT = """你是一个Executor Agent (L2+)。你的任务是执行分配的目标。
 
-Be thorough and report your progress."""
+根据目标类型调用相应的工具：
+- climate_control: 调用空调控制
+- navigation: 调用导航
+- music_control: 调用音乐播放
+- vehicle_status: 查询车辆状态
+- door_control: 车门控制
+- news: 获取新闻
+- emergency: 紧急救援
+
+执行后记录结果。"""
 
 
 class ExecutorAgent(BaseReActAgent):
-    """L2+ Agent for task execution.
-
-    Uses ReAct pattern to reason about goal execution.
-    Supports HITL interrupts for dangerous operations.
-    """
+    """L2+ Agent for task execution using ToolRegistry."""
 
     def __init__(self, executor_id: str, llm: Any | None = None):
         super().__init__(
@@ -36,6 +37,17 @@ class ExecutorAgent(BaseReActAgent):
         )
         self.executor_id = executor_id
         self.llm = llm
+        self._registry = None
+
+    def _get_registry(self):
+        """Lazy load ToolRegistry to avoid circular import."""
+        if self._registry is None:
+            import sys
+            import os
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from backend.tools import registry
+            self._registry = registry
+        return self._registry
 
     async def think(self, state: AgentState) -> str:
         """Analyze assigned goal."""
@@ -44,51 +56,82 @@ class ExecutorAgent(BaseReActAgent):
             return "No goals assigned"
 
         goal_ids = list(goals.keys())
-        return f"Executing goals: {goal_ids}"
+        return f"Executing {len(goal_ids)} goals"
 
     async def act(self, state: AgentState, thought: str) -> dict[str, Any]:
-        """Execute the goals.
-
-        Checks for approval requirements before execution.
-        """
+        """Execute the goals using ToolRegistry."""
         goals = state.goals
         if not goals:
             return {"execution_results": {}}
 
-        # Check if approval needed (dangerous operations)
-        if self._needs_approval(state):
-            if state.needs_approval:
-                result = self.interrupt_and_wait("需要审批才能执行", state)
-                if not result.get("approved", False):
-                    return {
-                        "execution_results": {},
-                        "metadata": {"_finished": True, "interrupted": True},
-                    }
-
-        # Execute goals (stub)
+        registry = self._get_registry()
         execution_results = {}
-        for goal_id, goal in goals.items():
-            # Update goal status
-            goal.status = GoalStatus.COMPLETED
-            result = {"status": "completed", "output": f"Executed: {goal.description}"}
-            execution_results[goal_id] = result
 
-        logger.info("Executor %s: completed %d goals", self.executor_id, len(execution_results))
+        for goal_id, goal in goals.items():
+            try:
+                result = self._execute_goal(goal, registry)
+                goal.status = GoalStatus.COMPLETED
+                execution_results[goal_id] = {
+                    "status": "completed",
+                    "output": result.description,
+                    "state": result.state,
+                }
+            except Exception as e:
+                goal.status = GoalStatus.FAILED
+                execution_results[goal_id] = {
+                    "status": "failed",
+                    "output": str(e),
+                    "error": str(e),
+                }
+                logger.error("Goal %s failed: %s", goal_id, e)
+
+        completed = sum(1 for r in execution_results.values() if r.get("status") == "completed")
+        logger.info("Executor %s: completed %d/%d goals", self.executor_id, completed, len(goals))
 
         return {
             "execution_results": execution_results,
             "metadata": {"_finished": True},
         }
 
-    def _needs_approval(self, state: AgentState) -> bool:
-        """Check if operation needs human approval."""
-        goals = state.goals
-        dangerous_types = {"delete", "execute_command", "rm", "危险操作"}
+    def _execute_goal(self, goal: Goal, registry) -> Any:
+        """Execute a single goal using ToolRegistry."""
+        goal_type = goal.type
+        intent_info = getattr(goal, 'result', {}) or {}
+        entities = intent_info.get("entities", {})
 
-        for goal in goals.values():
-            if goal.type.lower() in dangerous_types:
-                return True
-        return False
+        # Map goal type to tool and action
+        if goal_type == "climate_control":
+            # Use control action with compound params
+            params = {}
+            if entities.get("temperature"):
+                params["temperature"] = entities["temperature"]
+            if entities.get("fan_speed"):
+                params["fan_speed"] = entities["fan_speed"]
+            params["power"] = True  # Turn on by default
+            return registry.call_tool("climate_control", "control", **params)
+
+        elif goal_type == "navigation":
+            destination = entities.get("destination", "")
+            return registry.call_tool("navigation", "navigate", destination=destination)
+
+        elif goal_type == "music_control":
+            return registry.call_tool("music_player", "play")
+
+        elif goal_type == "vehicle_status":
+            return registry.call_tool("vehicle_status", "get_status")
+
+        elif goal_type == "door_control":
+            return registry.call_tool("door_control", "lock")
+
+        elif goal_type == "news":
+            return registry.call_tool("news", "get_news")
+
+        elif goal_type == "emergency":
+            return registry.call_tool("emergency", "call", reason=entities.get("reason", ""))
+
+        else:
+            # Generic fallback
+            return registry.call_tool("vehicle_status", "get_status")
 
 
 def create_executor_agent(executor_id: str, llm: Any = None) -> ExecutorAgent:

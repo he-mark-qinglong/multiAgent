@@ -6,6 +6,7 @@ Layer 2: DeltaUpdate + EventBus (external notifications)
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -55,8 +56,18 @@ class PipelineStateGraph:
         self.tracer = LangSmithTracer()
         self._graph = None
 
+        # Create agents with MiniMax LLM
+        self._agents = None
+
         if LANGGRAPH_AVAILABLE:
             self._graph = self._build_graph()
+
+    def _get_agents(self) -> dict[str, Any]:
+        """Lazy load agents to avoid circular imports."""
+        if self._agents is None:
+            from core.agent_factory import get_agents
+            self._agents = get_agents()
+        return self._agents
 
     async def _emit_delta(
         self,
@@ -117,63 +128,60 @@ class PipelineStateGraph:
         return state.needs_approval and not state.interrupted
 
     async def _intent_node(self, state: AgentState) -> dict[str, Any]:
-        """Intent recognition node."""
-        from core.models import IntentChain, IntentNode
-
+        """Intent recognition node - uses IntentAgent with MiniMax LLM."""
         logger.info("Intent node: %s", state.user_query[:50])
 
-        intent_node = IntentNode(
-            intent="analyze",
-            entities={"query": state.user_query},
-            confidence=0.9,
-        )
-        intent_chain = IntentChain(
-            nodes=[intent_node],
-            current_node_id=intent_node.id,
-        )
+        # Use IntentAgent with MiniMax LLM
+        agents = self._get_agents()
+        intent_agent = agents["intent"]
 
-        # Emit delta for external notifications
-        await self._emit_delta(
-            entity_type=EntityType.INTENT,
-            entity_id=intent_chain.chain_id,
-            operation="create",
-            changes={"intent": intent_node.intent, "confidence": intent_node.confidence},
-            source_agent="intent_agent",
-        )
+        # Run intent agent's think and act
+        thought = await intent_agent.think(state)
+        result = await intent_agent.act(state, thought)
+        intent_chain = result.get("intent_chain")
+
+        if intent_chain:
+            # Emit delta for external notifications
+            for node in intent_chain.nodes:
+                await self._emit_delta(
+                    entity_type=EntityType.INTENT,
+                    entity_id=intent_chain.chain_id,
+                    operation="create",
+                    changes={"intent": node.intent, "confidence": node.confidence},
+                    source_agent="intent_agent",
+                )
 
         return {"intent_chain": intent_chain}
 
     async def _planner_node(self, state: AgentState) -> dict[str, Any]:
-        """Planning node."""
-        from core.models import Goal, Plan
-
+        """Planning node - uses PlannerAgent to create multiple goals."""
         if not state.intent_chain:
             return {"plan": None, "goals": {}}
 
-        current_intent = state.intent_chain.nodes[-1].intent
-        goal = Goal(
-            type="execute",
-            description=f"Execute: {current_intent}",
-        )
+        # Use PlannerAgent with MiniMax LLM
+        agents = self._get_agents()
+        planner_agent = agents["planner"]
 
-        plan = Plan(
-            intent_chain_ref=state.intent_chain.chain_id,
-            execution_order=[goal.id],
-        )
+        # Run planner agent's think and act
+        thought = await planner_agent.think(state)
+        result = await planner_agent.act(state, thought)
+        plan = result.get("plan")
+        goals = result.get("goals", {})
 
-        # Emit delta
-        await self._emit_delta(
-            entity_type=EntityType.GOAL,
-            entity_id=goal.id,
-            operation="create",
-            changes={"description": goal.description, "type": goal.type},
-            source_agent="planner_agent",
-        )
+        # Emit delta for each goal
+        for goal_id, goal in goals.items():
+            await self._emit_delta(
+                entity_type=EntityType.GOAL,
+                entity_id=goal_id,
+                operation="create",
+                changes={"description": goal.description, "type": goal.type},
+                source_agent="planner_agent",
+            )
 
-        return {"plan": plan, "goals": {goal.id: goal}}
+        return {"plan": plan, "goals": goals}
 
     async def _executor_node(self, state: AgentState) -> dict[str, Any]:
-        """Execution node with interrupt support."""
+        """Execution node with interrupt support - uses ExecutorAgent with ToolRegistry."""
         goals = state.goals
 
         if not goals:
@@ -190,21 +198,24 @@ class PipelineStateGraph:
                         "metadata": {"reason": result.get("reason", "用户拒绝")},
                     }
 
-        execution_results = {}
-        for goal_id, goal in goals.items():
-            execution_results[goal_id] = {
-                "status": "completed",
-                "result": f"Executed: {goal.description}",
-            }
+        # Use ExecutorAgent with ToolRegistry
+        agents = self._get_agents()
+        executor_agent = agents["executor"]
 
-        # Emit delta
-        await self._emit_delta(
-            entity_type=EntityType.STATUS,
-            entity_id=goal_id,
-            operation="update",
-            changes={"status": "completed", "result": execution_results[goal_id]},
-            source_agent="executor_agent",
-        )
+        # Run executor agent's think and act
+        thought = await executor_agent.think(state)
+        result = await executor_agent.act(state, thought)
+        execution_results = result.get("execution_results", {})
+
+        # Emit delta for each result
+        for goal_id, result_data in execution_results.items():
+            await self._emit_delta(
+                entity_type=EntityType.STATUS,
+                entity_id=goal_id,
+                operation="update",
+                changes={"status": result_data.get("status", "completed"), "result": result_data},
+                source_agent="executor_agent",
+            )
 
         return {"execution_results": execution_results}
 
@@ -218,24 +229,24 @@ class PipelineStateGraph:
         }
 
     async def _synthesizer_node(self, state: AgentState) -> dict[str, Any]:
-        """Synthesis node."""
-        results = state.execution_results
-        goal_count = len(results)
-        completed = sum(1 for r in results.values() if r.get("status") == "completed")
+        """Synthesis node - uses SynthesizerAgent for natural language summary."""
+        # Use SynthesizerAgent for natural language response
+        agents = self._get_agents()
+        synthesizer_agent = agents["synthesizer"]
 
-        response = f"完成了 {completed}/{goal_count} 个任务。"
-        for goal_id, result in results.items():
-            if result:
-                response += f"\n- {goal_id}: {result.get('result', 'Done')}"
+        # Run synthesizer agent's think and act
+        thought = await synthesizer_agent.think(state)
+        result = await synthesizer_agent.act(state, thought)
+        final_response = result.get("final_response", "")
 
-        return {"final_response": response}
+        return {"final_response": final_response}
 
     def invoke(
         self,
         input: UserQuery | dict[str, Any],
         config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Synchronous invoke."""
+        """Synchronous invoke (bridges to async for LangGraph)."""
         if not LANGGRAPH_AVAILABLE:
             return {"final_response": "LangGraph not available"}
 
@@ -247,7 +258,8 @@ class PipelineStateGraph:
             config["configurable"] = {}
 
         try:
-            return self._graph.invoke(input, config=config)
+            # Bridge sync -> async since nodes are async functions
+            return asyncio.run(self._graph.ainvoke(input, config=config))
         except Exception as e:
             logger.error("Graph invoke error: %s", e)
             raise
