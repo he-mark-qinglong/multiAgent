@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multiagent-config
+  namespace: multiagent
+data:
+  LANGSMITH_PROJECT: "multiagent-prod"

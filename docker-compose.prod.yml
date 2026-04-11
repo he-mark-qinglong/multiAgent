@@ -1,0 +1,37 @@
+services:
+  multiagent:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: multiagent:latest
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - LANGSMITH_PROJECT=${LANGSMITH_PROJECT:-multiagent-prod}
+      - CHECKPOINT_DB=postgres
+    healthcheck:
+      test: ["CMD", "python", "-c", "import core; print('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=multiagent
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  postgres_data:
