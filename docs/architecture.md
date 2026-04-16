@@ -305,7 +305,8 @@ multiAgent/
 │   └── context/           # 上下文模板
 │
 └── tests/
-    └── mock_tools/        # Mock工具实现 (含LLM描述生成)
+    ├── mock_tools/        # Mock工具实现 (含LLM描述生成)
+    └── test_orchestration_sim.py  # 飞书消息处理模拟测试
 ```
 
 ---
@@ -318,18 +319,21 @@ multiAgent/
 - **可维护**: 关键词、任务模板集中管理
 - **灵活**: 支持动态参数提取（目的地等）
 
-### 6.2 为什么流式用 asyncio.as_completed？
+### 6.2 为什么用 asyncio.gather 而非 as_completed？
 
 ```python
-# 而非 asyncio.gather()
-for coro in asyncio.as_completed(tasks):
-    result = await coro
+# 使用 asyncio.gather 等待所有完成
+results = await asyncio.gather(*[c[0] for c in coros])
+for result, (coro, team_id) in zip(results, coros):
+    sub_results[team_id] = result
     if self.result_callback:
-        self.result_callback(team_id, result)  # 立即回调
+        self.result_callback(team_id, result)
 ```
 
-- **实时反馈**: 每个 SubTeam 完成后立即发送结果
-- **用户体验**: 不等待所有任务完成
+**历史**: 曾尝试使用 `asyncio.as_completed` 实现流式，但因 dict 与协程配合的 bug（await as_completed 返回值而非 Future）导致错误。最终使用 `asyncio.gather` 保证正确性。
+
+- **正确性优先**: 确保所有 SubTeam 结果正确收集
+- **流式通过回调**: result_callback 仍可在每个结果可用时立即通知
 
 ### 6.3 为什么工具用 Mock + LLM？
 
@@ -342,14 +346,31 @@ for coro in asyncio.as_completed(tasks):
 ## 7. 待办 / 改进方向
 
 - [ ] 天气工具接入真实 API（和风天气等）
+- [x] 天气 Intent/Goal 路由（已修复，WeatherTool 已集成）
 - [ ] LLM描述生成增加上下文（如用户历史偏好）
 - [ ] 支持动态加载 SubTeam（运行时添加新team类型）
 - [ ] 完善单元测试覆盖率
 - [ ] MonitorAgent 集成（监控+告警）
+- [x] 测试模拟框架（test_orchestration_sim.py 已创建）
 
 ---
 
-## 8. 相关文档
+---
+
+## 8. 通信通道
+
+系统支持两条消息处理路径：
+
+| 通道 | 协议 | 用途 | 处理链路 |
+|------|------|------|---------|
+| 自有客户端 | SSE | 实时推理展示 | `/api/chat` → llm_reasoning() → 单工具调用 |
+| 飞书 | WebSocket | 消息推送 | Feishu WS → OrchestrationEngine → CompositeTeam → 多SubTeam并行 |
+
+**飞书专用配置**: `~/.multiagent/teams/feishu.json` 定义飞书消息的 SubTeam 路由。
+
+---
+
+## 9. 相关文档
 
 - [Orchestration Engine 设计](./plans/orchestration-engine.md)
 - [多Agent核心规则](../.claude/rules/00-multi-agent-core.md)
