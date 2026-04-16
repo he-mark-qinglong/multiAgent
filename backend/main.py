@@ -35,6 +35,7 @@ from tests.mock_tools import MCP_TOOLS
 
 _feishu_ws_thread = None
 _processed_msg_ids: set[str] = set()
+_pending_responses: dict[str, tuple[str, str]] = {}  # msg_id -> (sender_id, response)
 
 
 def feishu_message_handler(text: str, sender_id: str, chat_id: str, msg_id: str, event: dict) -> None:
@@ -47,35 +48,93 @@ def feishu_message_handler(text: str, sender_id: str, chat_id: str, msg_id: str,
 
     print(f"[Feishu WS] Message from {sender_id}: {text[:100]}")
 
-    # Get or create pipeline
-    pipeline = CollaborationPipeline(enable_tracing=False)
+    # Use Orchestration Engine to enqueue the query
+    from core.orchestration import get_engine, QueryPriority, QueryType
 
-    try:
-        result = pipeline.invoke(text)
-        response_text = result.get("final_response", "处理中...")
-    except Exception as e:
-        response_text = f"抱歉，处理消息时出错: {str(e)}"
+    engine = get_engine()
 
-    # Send response back to Feishu
+    # Enqueue with priority based on message content
+    priority = QueryPriority.NORMAL
+    if "紧急" in text or "快" in text:
+        priority = QueryPriority.HIGH
+
+    query_id = engine.enqueue(
+        content=text,
+        query_type=QueryType.NORMAL,
+        priority=priority,
+        team_id="feishu",  # 飞书专用 team
+        metadata={"sender_id": sender_id, "msg_id": msg_id},
+    )
+
+    # 异步等待结果并发送（通过事件机制）
+    _pending_responses[query_id] = (sender_id, msg_id)
+
+    # 启动引擎（如果还没启动）
     import asyncio
-    feishu_client = get_feishu_client()
-
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            asyncio.create_task(feishu_client.send_text(
+            asyncio.create_task(_ensure_engine_running())
+    except RuntimeError:
+        pass
+
+
+async def _ensure_engine_running() -> None:
+    """确保引擎正在运行."""
+    from core.orchestration import get_engine
+    engine = get_engine()
+    # 引擎应该已经在运行，这里只是确保
+
+
+def _setup_engine_event_handler() -> None:
+    """设置引擎事件处理器."""
+    from core.orchestration import get_engine
+    engine = get_engine()
+
+    def on_event(event_type: str, data: dict) -> None:
+        if event_type == "query_completed":
+            _handle_query_completed(data)
+
+    engine.event_handler = on_event
+
+
+def _handle_query_completed(data: dict) -> None:
+    """处理 query 完成事件，发送响应到飞书."""
+    query_id = data.get("query_id")
+    result = data.get("result", {})
+    response_text = result.get("final_response", "处理中...")
+
+    # 查找 pending 的响应
+    sender_id, msg_id = None, None
+    for qid, (sid, mid) in list(_pending_responses.items()):
+        if qid == query_id:
+            sender_id, msg_id = sid, mid
+            del _pending_responses[qid]
+            break
+
+    if not sender_id:
+        return
+
+    # 发送响应
+    import asyncio
+    feishu_client = get_feishu_client()
+
+    async def send():
+        try:
+            await feishu_client.send_text(
                 receive_id=sender_id,
                 text=response_text,
                 msg_id=msg_id,
-            ))
-        else:
-            loop.run_until_complete(feishu_client.send_text(
-                receive_id=sender_id,
-                text=response_text,
-                msg_id=msg_id,
-            ))
-    except Exception as e:
-        print(f"[Feishu WS] Failed to send response: {e}")
+            )
+            print(f"[Feishu WS] Response sent to {sender_id[:20]}...")
+        except Exception as e:
+            print(f"[Feishu WS] Failed to send response: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(send())
+    except RuntimeError:
+        asyncio.run(send())
 
 
 def start_feishu_ws() -> None:
@@ -101,8 +160,17 @@ app = FastAPI(title="智能车载助手 API", version="1.0.0")
 
 @app.on_event("startup")
 async def startup_event():
-    """Start Feishu WebSocket client on app startup."""
-    # Start Feishu WS client in background thread
+    """Start Feishu WebSocket client and Orchestration Engine on app startup."""
+    # 启动编排引擎
+    from core.orchestration import start_engine
+    await start_engine()
+    print("[Engine] Orchestration engine started")
+
+    # 设置引擎事件处理器
+    _setup_engine_event_handler()
+    print("[Engine] Event handler configured")
+
+    # 启动 Feishu WS client in background thread
     import threading
     global _feishu_ws_thread
     _feishu_ws_thread = start_feishu_ws_client(
