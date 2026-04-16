@@ -21,7 +21,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Feishu config paths
-FEISHU_CONFIG_PATH = Path.home() / ".multiagent" / "feishu.json"
+FEISHU_CONFIG_PATH = Path.home() / ".multiagent" / "channels" / "feishu.json"
 
 
 def _load_feishu_config() -> dict[str, Any]:
