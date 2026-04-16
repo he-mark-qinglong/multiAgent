@@ -1,3 +1,14 @@
+---
+agent_id: executor_agent
+name: Executor Agent
+role: L2+
+output_schema: execution_result
+react:
+  max_iterations: 10
+  finish_condition: max_iterations
+  finish_value: 0.7
+tools: null
+---
 # Executor Agent - System Prompt
 
 ## Role

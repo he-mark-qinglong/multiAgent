@@ -24,6 +24,38 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Config paths
+MULTIAGENT_CONFIG_PATH = Path.home() / ".multiagent" / "config.json"
+MULTIAGENT_ENV_PATH = Path.home() / ".multiagent" / ".env"
+
+
+def _load_token_from_multiagent_env() -> str | None:
+    """Load ANTHROPIC_AUTH_TOKEN from ~/.multiagent/.env as fallback."""
+    try:
+        if MULTIAGENT_ENV_PATH.exists():
+            with open(MULTIAGENT_ENV_PATH) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        if "=" in line:
+                            key, value = line.split("=", 1)
+                            if key == "ANTHROPIC_AUTH_TOKEN":
+                                return value
+    except Exception as e:
+        logger.debug("Failed to load token from .multiagent/.env: %s", e)
+    return None
+
+
+def _load_config() -> dict[str, Any]:
+    """Load model config from ~/.multiagent/config.json."""
+    try:
+        if MULTIAGENT_CONFIG_PATH.exists():
+            with open(MULTIAGENT_CONFIG_PATH) as f:
+                return json.load(f)
+    except Exception as e:
+        logger.debug("Failed to load config from .multiagent/config.json: %s", e)
+    return {}
+
 
 def _load_token_from_settings() -> str | None:
     """Load ANTHROPIC_AUTH_TOKEN from ~/.claude/settings.json as fallback."""
@@ -42,6 +74,11 @@ class MiniMaxClient:
     """MiniMax API client for intent recognition and tool selection.
 
     Uses Anthropic-compatible API format via MiniMax gateway.
+    Config is loaded from (in order of precedence):
+    1. Environment variables
+    2. ~/.multiagent/.env (API tokens)
+    3. ~/.multiagent/config.json (model settings)
+    4. ~/.claude/settings.json (fallback)
     """
 
     def __init__(
@@ -49,13 +86,24 @@ class MiniMaxClient:
         api_key: str | None = None,
         base_url: str | None = None,
     ):
-        # Try env var first, then fall back to settings.json
-        env_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("MINIMAX_API_KEY")
-        settings_token = _load_token_from_settings()
-        self.api_key = api_key or env_token or settings_token or ""
+        # Load config from ~/.multiagent/config.json
+        config = _load_config()
 
+        # Priority: env var > ~/.multiagent/.env > ~/.claude/settings.json
+        env_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("MINIMAX_API_KEY")
+        multiagent_token = _load_token_from_multiagent_env()
+        settings_token = _load_token_from_settings()
+        self.api_key = api_key or env_token or multiagent_token or settings_token or ""
+
+        # Priority: env var > config.json > default
         env_base_url = os.environ.get("ANTHROPIC_BASE_URL")
-        self.base_url = base_url or env_base_url or "https://api.minimax.io/anthropic"
+        config_base_url = config.get("model", {}).get("address")
+        self.base_url = base_url or env_base_url or config_base_url or "https://api.minimax.io/anthropic"
+
+        # Model type from config or default
+        config_model = config.get("model", {}).get("type")
+        self.model_type = config_model or "MiniMax-M2.7-highspeed"
+
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -111,7 +159,7 @@ class MiniMaxClient:
 
         # Build request body
         request_body: dict[str, Any] = {
-            "model": "MiniMax-M2.7-highspeed",
+            "model": self.model_type,
             "max_tokens": 1024,
             "messages": messages,
         }

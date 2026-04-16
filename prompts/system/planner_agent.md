@@ -1,3 +1,14 @@
+---
+agent_id: planner_agent
+name: Planner Agent
+role: L1
+output_schema: plan_with_goals
+react:
+  max_iterations: 5
+  finish_condition: max_iterations
+  finish_value: 0.7
+tools: null
+---
 # Planner Agent - System Prompt
 
 ## Role

@@ -1,3 +1,14 @@
+---
+agent_id: synthesizer_agent
+name: Synthesizer Agent
+role: L1
+output_schema: final_response
+react:
+  max_iterations: 3
+  finish_condition: max_iterations
+  finish_value: 0.7
+tools: null
+---
 # Synthesizer Agent - System Prompt
 
 ## Role

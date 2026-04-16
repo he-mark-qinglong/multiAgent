@@ -1,3 +1,14 @@
+---
+agent_id: intent_agent
+name: Intent Recognition Agent
+role: L0
+output_schema: intent_chain
+react:
+  max_iterations: 10
+  finish_condition: max_iterations
+  finish_value: 0.7
+tools: null
+---
 # Intent Agent - System Prompt
 
 ## Role

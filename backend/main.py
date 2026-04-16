@@ -5,20 +5,104 @@ SSE 事件格式: event=<type>, data=<json>
 前端期望事件: think, action, observation, result, done
 """
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import time
 import uuid
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from backend.tools import registry
+from backend.feishu_integration import (
+    get_feishu_client,
+    get_feishu_ws_client,
+    start_feishu_ws_client,
+    parse_message_content,
+    _load_feishu_config,
+)
 from core.minimax_client import get_minimax_client, INTENT_SYSTEM_PROMPT, INTENT_USER_PROMPT
+from pipelines.collaboration_pipeline import CollaborationPipeline
 from tests.mock_tools import MCP_TOOLS
 
+# ============================================================================
+# Feishu WebSocket Client Management
+# ============================================================================
+
+_feishu_ws_thread = None
+
+
+def feishu_message_handler(text: str, sender_id: str, chat_id: str, msg_id: str, event: dict) -> None:
+    """Handle incoming Feishu message via WebSocket."""
+    print(f"[Feishu WS] Message from {sender_id}: {text[:100]}")
+
+    # Get or create pipeline
+    pipeline = CollaborationPipeline(enable_tracing=False)
+
+    try:
+        result = pipeline.invoke(text)
+        response_text = result.get("final_response", "处理中...")
+    except Exception as e:
+        response_text = f"抱歉，处理消息时出错: {str(e)}"
+
+    # Send response back to Feishu
+    import asyncio
+    feishu_client = get_feishu_client()
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(feishu_client.send_text(
+                receive_id=sender_id,
+                text=response_text,
+                msg_id=msg_id,
+            ))
+        else:
+            loop.run_until_complete(feishu_client.send_text(
+                receive_id=sender_id,
+                text=response_text,
+                msg_id=msg_id,
+            ))
+    except Exception as e:
+        print(f"[Feishu WS] Failed to send response: {e}")
+
+
+def start_feishu_ws() -> None:
+    """Start Feishu WebSocket client in background thread."""
+    global _feishu_ws_thread
+    if _feishu_ws_thread is not None:
+        print("[Feishu WS] Already running")
+        return
+
+    _feishu_ws_thread = start_feishu_ws_client(
+        event_handler=feishu_message_handler,
+        blocking=False,
+    )
+    print("[Feishu WS] Started in background thread")
+
+
+# ============================================================================
+# FastAPI App
+# ============================================================================
+
 app = FastAPI(title="智能车载助手 API", version="1.0.0")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Start Feishu WebSocket client on app startup."""
+    # Start Feishu WS client in background thread
+    import threading
+    global _feishu_ws_thread
+    _feishu_ws_thread = start_feishu_ws_client(
+        event_handler=feishu_message_handler,
+        blocking=False,
+    )
+    print("[Feishu] WebSocket client started in background")
 
 # ============================================================================
 # 会话存储 (InMemory)
@@ -249,6 +333,175 @@ async def chat(request: ChatRequest):
             }
 
     return EventSourceResponse(event_generator(), media_type="text/event-stream")
+
+
+# ============================================================================
+# Feishu Webhook 端点
+# ============================================================================
+
+# Global pipeline instance for Feishu
+_feishu_pipeline: CollaborationPipeline | None = None
+
+
+def get_feishu_pipeline() -> CollaborationPipeline:
+    """Get or create pipeline for Feishu."""
+    global _feishu_pipeline
+    if _feishu_pipeline is None:
+        _feishu_pipeline = CollaborationPipeline(enable_tracing=False)
+    return _feishu_pipeline
+
+
+@app.get("/feishu/webhook")
+async def feishu_webhook_verify(request: Request):
+    """Feishu webhook verification endpoint (GET).
+
+    Feishu sends a GET request with challenge parameter for verification.
+    """
+    params = dict(request.query_params)
+
+    # Feishu webhook verification challenge
+    if "challenge" in params:
+        challenge = params["challenge"]
+        return {"challenge": challenge}
+
+    # Otherwise return OK for health check
+    return {"status": "ok"}
+
+
+@app.post("/feishu/webhook")
+async def feishu_webhook_event(request: Request):
+    """Feishu webhook event receiver (POST).
+
+    Receives events from Feishu and processes them through the agent pipeline.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    # Get Feishu config
+    config = _load_feishu_config()
+    encrypt_key = config.get("encryptKey", "")
+
+    # Verify signature if encryption is enabled
+    headers = dict(request.headers)
+    timestamp = headers.get("X-Lark-Request-Timestamp", "")
+    signature = headers.get("X-Lark-Signature", "")
+
+    if encrypt_key and timestamp and signature:
+        # Create signature verification string
+        string_to_sign = f"{timestamp}{encrypt_key}"
+        sign = hmac.new(
+            encrypt_key.encode("utf-8"),
+            string_to_sign.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+        expected = base64.b64encode(sign).decode("utf-8")
+
+        if expected != signature:
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Handle different event types
+    event_type = body.get("type")
+
+    # Subscription confirmation (URL verification)
+    if event_type == "url_verification":
+        challenge = body.get("challenge", "")
+        return {"challenge": challenge}
+
+    # Event callback
+    if event_type == "event_callback":
+        event = body.get("event", {})
+
+        # Handle message events
+        if event.get("event_type") == "im.message.receive_v1":
+            message = event.get("message", {})
+            _chat_id = message.get("chat_id", "")
+            msg_id = message.get("message_id", "")
+            msg_type = message.get("message_type", "text")
+            content_str = message.get("content", "{}")
+
+            # Only process text messages in p2p (direct) chats
+            chat_type = message.get("chat_type", "p2p")
+            if chat_type != "p2p":
+                return {"status": "ignored", "reason": "group messages not supported yet"}
+
+            # Parse message content
+            text = parse_message_content(content_str, msg_type)
+
+            if not text:
+                return {"status": "ignored", "reason": "empty message"}
+
+            # Get sender info
+            sender = event.get("sender", {})
+            sender_id = sender.get("sender_id", {}).get("open_id", "")
+
+            # Process message through pipeline
+            pipeline = get_feishu_pipeline()
+
+            try:
+                result = pipeline.invoke(text)
+                response_text = result.get("final_response", "处理中...")
+            except Exception as e:
+                response_text = f"抱歉，处理消息时出错: {str(e)}"
+
+            # Send response back to Feishu
+            feishu_client = get_feishu_client()
+            try:
+                await feishu_client.send_text(
+                    receive_id=sender_id,
+                    text=response_text,
+                    msg_id=msg_id,
+                )
+            except Exception as e:
+                # Log error but don't fail the webhook
+                print(f"Failed to send Feishu response: {e}")
+
+            return {"status": "ok"}
+
+    # Unknown event type
+    return {"status": "ignored"}
+
+
+# ============================================================================
+# Feishu WebSocket 控制端点
+# ============================================================================
+
+@app.get("/feishu/status")
+async def feishu_status():
+    """Check Feishu WebSocket connection status."""
+    global _feishu_ws_thread
+    return {
+        "ws_running": _feishu_ws_thread is not None and _feishu_ws_thread.is_alive(),
+        "config": {
+            "app_id": _load_feishu_config().get("appId", ""),
+            "domain": _load_feishu_config().get("domain", "feishu"),
+        }
+    }
+
+
+@app.post("/feishu/start")
+async def feishu_start():
+    """Manually start Feishu WebSocket client."""
+    global _feishu_ws_thread
+
+    if _feishu_ws_thread is not None and _feishu_ws_thread.is_alive():
+        return {"status": "already_running"}
+
+    start_feishu_ws()
+    return {"status": "starting"}
+
+
+@app.post("/feishu/stop")
+async def feishu_stop():
+    """Stop Feishu WebSocket client."""
+    global _feishu_ws_thread
+
+    ws_client = get_feishu_ws_client()
+    ws_client.stop()
+
+    _feishu_ws_thread = None
+    return {"status": "stopped"}
 
 
 # ============================================================================
