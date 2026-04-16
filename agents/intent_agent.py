@@ -170,7 +170,7 @@ class IntentAgent(BaseReActAgent):
                     logger.debug(f"LLM parsed {len(data.get('intents', []))} intents from data: {data}")
                     for intent_data in data.get("intents", []):
                         # Handle various field names from LLM
-                        intent_type = intent_data.get("type") or intent_data.get("name") or intent_data.get("category", "unknown")
+                        intent_type = intent_data.get("type") or intent_data.get("name") or intent_data.get("category") or intent_data.get("intent", "unknown")
                         params = intent_data.get("params", {}) or intent_data.get("parameters", {})
                         confidence = intent_data.get("confidence", 0.9)
 
@@ -191,6 +191,16 @@ class IntentAgent(BaseReActAgent):
         # Fallback to keyword-based if no intents found
         if not intent_nodes:
             intent_nodes = self._keyword_intents(query)
+
+        # Enhancement: If LLM returned fewer intents than keyword extraction would find,
+        # merge keyword intents to ensure all user requests are covered
+        keyword_intents = self._keyword_intents(query)
+        if len(intent_nodes) < len(keyword_intents):
+            logger.info(f"IntentAgent: LLM returned {len(intent_nodes)} intents, keyword found {len(keyword_intents)} - merging")
+            existing_types = {n.intent for n in intent_nodes}
+            for node in keyword_intents:
+                if node.intent not in existing_types:
+                    intent_nodes.append(node)
 
         intent_chain = IntentChain(
             nodes=intent_nodes,
@@ -263,6 +273,13 @@ class IntentAgent(BaseReActAgent):
         # News
         if any(w in query_lower for w in ["新闻", "资讯"]):
             nodes.append(IntentNode(intent="news", entities={}, confidence=0.9))
+
+        # Weather
+        if any(w in query_lower for w in ["天气", "气温", "明天"]):
+            params = {}
+            if "明天" in query:
+                params["forecast_days"] = 2
+            nodes.append(IntentNode(intent="weather", entities=params, confidence=0.9))
 
         # Door
         if any(w in query_lower for w in ["锁", "车门"]):

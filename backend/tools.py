@@ -13,6 +13,7 @@ from tests.mock_tools import (
     NavigationTool,
     MusicTool,
     VehicleStatusTool,
+    WeatherTool,
     DoorTool,
     EmergencyTool,
     NewsTool,
@@ -32,6 +33,7 @@ class ToolRegistry:
         self.navigation = NavigationTool()
         self.music = MusicTool()
         self.vehicle = VehicleStatusTool()
+        self.weather = WeatherTool()
         self.door = DoorTool()
         self.emergency = EmergencyTool()
         self.news = NewsTool()
@@ -47,6 +49,7 @@ class ToolRegistry:
             "navigation": self.navigation,
             "music_player": self.music,
             "vehicle_status": self.vehicle,
+            "get_weather": self.weather,
             "door_control": self.door,
             "emergency": self.emergency,
             "news": self.news,
@@ -86,6 +89,11 @@ class ToolRegistry:
             "call": lambda: tool.call(kwargs.get("reason", "")),
             # NewsTool / VehicleStatusTool
             "get_news": lambda: tool.get_news(simulate_delay=True),
+            # WeatherTool
+            "get_weather": lambda: tool.get_weather(
+                location=kwargs.get("location", "北京"),
+                forecast_days=int(kwargs.get("forecast_days", 1))
+            ),
         }
 
         handler = action_map.get(action)

@@ -80,6 +80,7 @@ class PlannerAgent(BaseReActAgent):
             "climate": "climate_control",
             "navigation": "navigation",
             "music": "music_control",
+            "weather": "weather",
             "vehicle_status": "vehicle_status",
             "door": "door_control",
             "news": "news",

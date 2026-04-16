@@ -133,6 +133,32 @@ MCP_TOOLS = {
             "description": "string"
         }
     },
+    "get_weather": {
+        "name": "get_weather",
+        "description": "查询天气信息",
+        "category": "information",
+        "parameters": {
+            "location": {
+                "type": "string",
+                "description": "城市名称"
+            },
+            "forecast_days": {
+                "type": "number",
+                "description": "预报天数 (1-7)"
+            }
+        },
+        "returns": {
+            "success": "bool",
+            "state": {
+                "location": "string",
+                "temperature": "number",
+                "condition": "string",
+                "humidity": "number",
+                "forecast": "array"
+            },
+            "description": "string"
+        }
+    },
     "door_control": {
         "name": "door_control",
         "description": "控制车门锁定",
@@ -347,6 +373,63 @@ class VehicleStatusTool:
             state={"battery": 85, "range_km": 320, "tire_pressure": "2.3-2.4 bar", "doors_locked": True},
             description="🚗 车辆状态:\n   ├─ 电量: 85%\n   ├─ 续航: 约 320 km\n   ├─ 胎压: 正常\n   ├─ 车门: 已锁\n   └─ 类型: 电动车",
             tool_name="vehicle_status"
+        )
+
+
+class WeatherTool:
+    """天气查询工具 - MCP 实现。"""
+
+    def __init__(self):
+        self._conditions = ["晴天", "多云", "阴天", "小雨", "大雨", "雷阵雨", "雾霾"]
+        self._locations = {
+            "北京": {"temp": 22, "humidity": 45},
+            "上海": {"temp": 25, "humidity": 60},
+            "广州": {"temp": 28, "humidity": 75},
+            "深圳": {"temp": 27, "humidity": 70},
+            "成都": {"temp": 20, "humidity": 65},
+        }
+
+    def get_status(self) -> ToolResult:
+        """查询当前城市天气（默认北京）"""
+        return self.get_weather(location="北京", forecast_days=1)
+
+    def get_weather(self, location: str = "北京", forecast_days: int = 1) -> ToolResult:
+        """查询天气"""
+        loc_data = self._locations.get(location, {"temp": 22 + random.randint(-5, 5), "humidity": 50 + random.randint(-20, 20)})
+        temp = loc_data["temp"] + random.randint(-3, 3)
+        humidity = max(20, min(95, loc_data["humidity"] + random.randint(-10, 10)))
+        condition = random.choice(self._conditions)
+
+        forecast = []
+        for day in range(1, forecast_days + 1):
+            forecast.append({
+                "day": day,
+                "high": temp + random.randint(2, 5),
+                "low": temp - random.randint(2, 5),
+                "condition": random.choice(self._conditions)
+            })
+
+        state = {
+            "location": location,
+            "temperature": temp,
+            "condition": condition,
+            "humidity": humidity,
+            "forecast": forecast
+        }
+
+        forecast_text = ""
+        if forecast_days > 1:
+            forecast_text = f"\n📅 {forecast_days}日天气预报:"
+            for f in forecast:
+                forecast_text += f"\n   Day {f['day']}: {f['condition']}, {f['low']}-{f['high']}°C"
+
+        description = f"🌤️ {location}天气:\n   🌡️ 温度: {temp}°C\n   💧 湿度: {humidity}%\n   ☁️ 状况: {condition}{forecast_text}"
+
+        return ToolResult(
+            success=True,
+            state=state,
+            description=description,
+            tool_name="get_weather"
         )
 
 

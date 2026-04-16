@@ -94,6 +94,8 @@ def _setup_engine_event_handler() -> None:
     def on_event(event_type: str, data: dict) -> None:
         if event_type == "query_completed":
             _handle_query_completed(data)
+        elif event_type == "subteam_stream":
+            _handle_subteam_stream(data)
 
     engine.event_handler = on_event
 
@@ -129,6 +131,47 @@ def _handle_query_completed(data: dict) -> None:
             print(f"[Feishu WS] Response sent to {sender_id[:20]}...")
         except Exception as e:
             print(f"[Feishu WS] Failed to send response: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(send())
+    except RuntimeError:
+        asyncio.run(send())
+
+
+def _handle_subteam_stream(data: dict) -> None:
+    """处理 SubTeam 流式结果，立即发送到飞书（不等待所有team完成）。"""
+    team_id = data.get("team_id", "")
+    response_text = data.get("response", "")
+
+    if not response_text:
+        return
+
+    # 查找 pending 的响应（使用 team_id 匹配）
+    sender_id, msg_id = None, None
+    for qid, (sid, mid) in list(_pending_responses.items()):
+        sender_id, msg_id = sid, mid
+        break  # 第一个匹配的
+
+    if not sender_id:
+        return
+
+    # 发送流式响应（追加形式）
+    import asyncio
+    feishu_client = get_feishu_client()
+
+    async def send():
+        try:
+            # 流式响应加个前缀表示是中间结果
+            stream_text = f"[{team_id}] {response_text}"
+            await feishu_client.send_text(
+                receive_id=sender_id,
+                text=stream_text,
+                msg_id=msg_id,
+            )
+            print(f"[Feishu WS] Stream from {team_id} sent to {sender_id[:20]}...")
+        except Exception as e:
+            print(f"[Feishu WS] Failed to send stream response: {e}")
 
     try:
         loop = asyncio.get_running_loop()

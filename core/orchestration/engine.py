@@ -43,7 +43,7 @@ class OrchestrationEngine:
         self.event_handler = event_handler
 
         self._queue = QueryQueue(max_size=self.config.max_queue_size)
-        self._teams: dict[str, AgentTeam] = {}
+        self._teams: dict[str, Any] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
         self._running_lock = threading.Lock()
 
@@ -206,7 +206,7 @@ class OrchestrationEngine:
 
         return self._queue.cancel(query_id)
 
-    def spawn_team(self, team_id: str, config: Optional[TeamConfig] = None) -> AgentTeam:
+    def spawn_team(self, team_id: str, config: Optional[TeamConfig] = None) -> Any:
         """产卵模式 - 创建新的 agent team.
 
         Args:
@@ -220,20 +220,70 @@ class OrchestrationEngine:
             logger.warning(f"Team {team_id} already exists, returning existing")
             return self._teams[team_id]
 
-        config = config or TeamConfig(team_id=team_id)
-        team = AgentTeam(config)
+        # 使用 CompositeTeam，支持多 SubTeam 并行处理
+        from .composite import CompositeTeam
+
+        # 从配置文件加载 SubTeam 配置
+        sub_team_data = self._load_team_config(team_id)
+
+        team = CompositeTeam(
+            team_id=team_id,
+            sub_team_configs=[TeamConfig(st["team_id"]) for st in sub_team_data],
+            sub_team_keywords={st["team_id"]: st.get("keywords", []) for st in sub_team_data},
+            result_callback=self._on_subteam_result,
+            sub_team_data=sub_team_data,
+        )
         self._teams[team_id] = team
 
         self._emit("team_spawned", {"team_id": team_id})
-        logger.info(f"Spawned new team: {team_id}")
+        logger.info(f"Spawned new CompositeTeam: {team_id} with {len(sub_team_data)} sub-teams")
 
         return team
 
-    def get_team(self, team_id: str) -> Optional[AgentTeam]:
+    def _load_team_config(self, team_id: str) -> list[dict]:
+        """从配置文件加载 Team 配置.
+
+        配置文件路径: ~/.multiagent/teams/{team_id}.json
+
+        Args:
+            team_id: team ID
+
+        Returns:
+            SubTeam 配置列表（含 keywords）
+        """
+        import json
+        from pathlib import Path
+
+        config_path = Path.home() / ".multiagent" / "teams" / f"{team_id}.json"
+
+        # 默认配置
+        default_sub_teams = [
+            {"team_id": "climate", "keywords": ["空调", "温度", "冷", "热"]},
+            {"team_id": "nav", "keywords": ["导航", "去", "机场", "路线"]},
+            {"team_id": "music", "keywords": ["音乐", "播放", "暂停", "切歌"]},
+            {"team_id": "weather", "keywords": ["天气", "明天", "气温"]},
+        ]
+
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    data = json.load(f)
+                    sub_teams = data.get("sub_teams", default_sub_teams)
+                    logger.info(f"Loaded team config from {config_path}")
+            except Exception as e:
+                logger.warning(f"Failed to load team config: {e}, using default")
+                sub_teams = default_sub_teams
+        else:
+            logger.info(f"Team config not found at {config_path}, using default")
+            sub_teams = default_sub_teams
+
+        return sub_teams
+
+    def get_team(self, team_id: str) -> Any:
         """获取 team."""
         return self._teams.get(team_id)
 
-    def get_or_create_team(self, team_id: str) -> AgentTeam:
+    def get_or_create_team(self, team_id: str) -> Any:
         """获取或创建 team."""
         return self._teams.get(team_id) or self.spawn_team(team_id)
 
@@ -267,6 +317,24 @@ class OrchestrationEngine:
                 self.event_handler(event_type, data)
             except Exception as e:
                 logger.error(f"Event handler error: {e}")
+
+    def _on_subteam_result(self, team_id: str, result: Any) -> None:
+        """流式回调：SubTeam 完成时立即发送结果到 Feishu."""
+        from core.orchestration.types import RunResult
+
+        if isinstance(result, RunResult):
+            response_text = result.final_response
+        elif isinstance(result, dict):
+            response_text = result.get("final_response", str(result))
+        else:
+            response_text = str(result)
+
+        # 发送流式结果到飞书
+        self._emit("subteam_stream", {
+            "team_id": team_id,
+            "response": response_text,
+        })
+        logger.info(f"SubTeam {team_id} streaming: {response_text[:50]}...")
 
 
 # 全局引擎实例
