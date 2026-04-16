@@ -49,8 +49,8 @@ class FeishuClient:
     ):
         config = _load_feishu_config()
 
-        self.app_id = app_id or config.get("app_id", "")
-        self.app_secret = app_secret or config.get("app_secret", "")
+        self.app_id = app_id or config.get("appId", "") or config.get("app_id", "")
+        self.app_secret = app_secret or config.get("appSecret", "") or config.get("app_secret", "")
         self.bot_name = bot_name
 
         # Feishu API endpoints
@@ -72,7 +72,7 @@ class FeishuClient:
             "app_secret": self.app_secret,
         }
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             response = await client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
@@ -135,7 +135,7 @@ class FeishuClient:
         if msg_id:
             payload["reply_to"] = msg_id
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as client:
             response = await client.post(url, json=payload, params=params, headers=headers)
             response.raise_for_status()
             result = response.json()
@@ -388,21 +388,27 @@ class FeishuWSClient:
         return builder.build()
 
     def _handle_message(self, data: Any) -> None:
-        """Handle incoming message event from Feishu."""
+        """Handle incoming message event from Feishu.
+
+        Args:
+            data: P2ImMessageReceiveV1 object from lark-oapi SDK
+        """
         try:
-            event = json.loads(data) if isinstance(data, str) else data
-            logger.info(f"Feishu WS received event: {event.get('event_type', 'unknown')}")
+            # Data is a P2ImMessageReceiveV1 object with:
+            # - event.message (EventMessage)
+            # - event.sender (EventSender)
+            message = data.event.message if hasattr(data.event, 'message') else None
+            sender = data.event.sender if hasattr(data.event, 'sender') else None
 
-            # Extract message info
-            event_data = event.get("event", {})
-            message = event_data.get("message", {})
-            sender = event_data.get("sender", {})
+            if message is None or sender is None:
+                logger.warning(f"Invalid message event structure: {data}")
+                return
 
-            msg_type = message.get("message_type", "text")
-            chat_id = message.get("chat_id", "")
-            msg_id = message.get("message_id", "")
-            content_str = message.get("content", "{}")
-            chat_type = message.get("chat_type", "p2p")
+            msg_type = message.message_type if hasattr(message, 'message_type') else "text"
+            chat_id = message.chat_id if hasattr(message, 'chat_id') else ""
+            msg_id = message.message_id if hasattr(message, 'message_id') else ""
+            content_str = message.content if hasattr(message, 'content') else "{}"
+            chat_type = message.chat_type if hasattr(message, 'chat_type') else "p2p"
 
             # Only process text messages in p2p (direct) chats
             if chat_type != "p2p":
@@ -416,7 +422,9 @@ class FeishuWSClient:
                 return
 
             # Get sender info
-            sender_id = sender.get("sender_id", {}).get("open_id", "")
+            sender_id = ""
+            if hasattr(sender, 'sender_id') and sender.sender_id:
+                sender_id = sender.sender_id.open_id if hasattr(sender.sender_id, 'open_id') else str(sender.sender_id)
 
             logger.info(f"Feishu WS message from {sender_id} in {chat_id}: {text[:100]}")
 
@@ -427,7 +435,7 @@ class FeishuWSClient:
                     sender_id=sender_id,
                     chat_id=chat_id,
                     msg_id=msg_id,
-                    event=event,
+                    event=data.event,
                 )
 
         except Exception as e:

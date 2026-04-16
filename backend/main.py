@@ -34,10 +34,17 @@ from tests.mock_tools import MCP_TOOLS
 # ============================================================================
 
 _feishu_ws_thread = None
+_processed_msg_ids: set[str] = set()
 
 
 def feishu_message_handler(text: str, sender_id: str, chat_id: str, msg_id: str, event: dict) -> None:
     """Handle incoming Feishu message via WebSocket."""
+    # Deduplicate duplicate messages from Feishu server retry
+    if msg_id in _processed_msg_ids:
+        print(f"[Feishu WS] Duplicate message ignored: {msg_id}")
+        return
+    _processed_msg_ids.add(msg_id)
+
     print(f"[Feishu WS] Message from {sender_id}: {text[:100]}")
 
     # Get or create pipeline

@@ -259,7 +259,20 @@ class PipelineStateGraph:
 
         try:
             # Bridge sync -> async since nodes are async functions
-            return asyncio.run(self._graph.ainvoke(input, config=config))
+            # Use run_until_complete if event loop exists, otherwise use run
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop, safe to use asyncio.run()
+                return asyncio.run(self._graph.ainvoke(input, config=config))
+            else:
+                # Already in async context, create a future and run it
+                async def _invoke():
+                    return await self._graph.ainvoke(input, config=config)
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, _invoke())
+                    return future.result()
         except Exception as e:
             logger.error("Graph invoke error: %s", e)
             raise
