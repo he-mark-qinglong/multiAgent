@@ -20,12 +20,29 @@ EXECUTOR_SYSTEM_PROMPT = """你是一个Executor Agent (L2+)。你的任务是�
 - vehicle_status: 查询车辆状态
 - door_control: 车门控制
 - news: 获取新闻
+- weather: 查询天气
 - emergency: 紧急救援
+- legal_*: 法律顾问工具
+- medical_*: 医疗顾问工具
+- emotional_*: 情绪支持工具
+- finance_*: 财务规划工具
+- learning_*: 学习教练工具
+- travel_*: 旅行规划工具
 
 执行后记录结果。"""
 
 # 配置哪些工具类型使用LLM生成自然语言描述
-USE_LLM_RESPONSE_TYPES = {"weather", "news", "vehicle_status", "music_control"}
+USE_LLM_RESPONSE_TYPES = {
+    "weather", "news", "vehicle_status", "music_control",
+    # 咨询类工具也使用LLM生成
+    "legal_contract_review", "legal_rights_protection", "legal_compliance_check",
+    "medical_symptom_analysis", "medical_disease_info", "medical_hospital_recommend",
+    "emotional_emotion_listen", "emotional_relationship_consult", "emotional_family_communication",
+    "emotional_social_advice", "emotional_self_discovery",
+    "finance_investment_analysis", "finance_budget_planning", "finance_tax_consult", "finance_retirement_plan",
+    "learning_study_plan", "learning_skill_learning", "learning_exam_prepare", "learning_time_management",
+    "travel_trip_plan", "travel_hotel_book", "travel_visa_consult", "travel_spot_recommend",
+}
 
 
 LLM_DESCRIPTION_PROMPT = """你是一个车载助手。请根据以下工具执行结果，用自然流畅的中文描述：
@@ -187,9 +204,142 @@ class ExecutorAgent(BaseReActAgent):
         elif goal_type == "emergency":
             return registry.call_tool("emergency", "call", reason=entities.get("reason", ""))
 
+        # ========== 法律顾问工具 ==========
+        elif goal_type == "legal_contract_review":
+            return registry.call_tool("legal_contract_review", "execute",
+                contract_type=entities.get("contract_type"),
+                risk_level=entities.get("risk_level"),
+                issues=entities.get("issues"))
+
+        elif goal_type == "legal_rights_protection":
+            return registry.call_tool("legal_rights_protection", "execute",
+                situation_summary=entities.get("situation_summary"),
+                rights_analysis=entities.get("rights_analysis"))
+
+        elif goal_type == "legal_compliance_check":
+            return registry.call_tool("legal_compliance_check", "execute",
+                check_target=entities.get("check_target"),
+                compliance_status=entities.get("compliance_status"))
+
+        # ========== 医疗顾问工具 ==========
+        elif goal_type == "medical_symptom_analysis":
+            return registry.call_tool("medical_symptom_analysis", "execute",
+                symptom=entities.get("symptom"),
+                duration=entities.get("duration"),
+                severity=entities.get("severity"))
+
+        elif goal_type == "medical_disease_info":
+            return registry.call_tool("medical_disease_info", "execute",
+                disease_name=entities.get("disease_name"),
+                info_type=entities.get("info_type"))
+
+        elif goal_type == "medical_hospital_recommend":
+            return registry.call_tool("medical_hospital_recommend", "execute",
+                symptom=entities.get("symptom"),
+                location=entities.get("location"))
+
+        # ========== 情绪支持工具 ==========
+        elif goal_type == "emotional_emotion_listen":
+            return registry.call_tool("emotional_emotion_listen", "execute",
+                emotion_type=entities.get("emotion_type"),
+                intensity=entities.get("intensity"))
+
+        elif goal_type == "emotional_relationship_consult":
+            return registry.call_tool("emotional_relationship_consult", "execute",
+                relationship_type=entities.get("relationship_type"),
+                issue=entities.get("issue"))
+
+        elif goal_type == "emotional_family_communication":
+            return registry.call_tool("emotional_family_communication", "execute",
+                family_role=entities.get("family_role"),
+                challenge=entities.get("challenge"))
+
+        elif goal_type == "emotional_social_advice":
+            return registry.call_tool("emotional_social_advice", "execute",
+                situation=entities.get("situation"),
+                goal=entities.get("goal"))
+
+        elif goal_type == "emotional_self_discovery":
+            return registry.call_tool("emotional_self_discovery", "execute",
+                exploration_area=entities.get("exploration_area"),
+                current_stage=entities.get("current_stage"))
+
+        # ========== 财务规划工具 ==========
+        elif goal_type == "finance_investment_analysis":
+            return registry.call_tool("finance_investment_analysis", "execute",
+                product_type=entities.get("product_type"),
+                amount=entities.get("amount"))
+
+        elif goal_type == "finance_budget_planning":
+            return registry.call_tool("finance_budget_planning", "execute",
+                monthly_income=entities.get("monthly_income"),
+                monthly_expenses=entities.get("monthly_expenses"))
+
+        elif goal_type == "finance_tax_consult":
+            return registry.call_tool("finance_tax_consult", "execute",
+                income=entities.get("income"),
+                tax_type=entities.get("tax_type"))
+
+        elif goal_type == "finance_retirement_plan":
+            return registry.call_tool("finance_retirement_plan", "execute",
+                current_age=entities.get("current_age"),
+                retirement_age=entities.get("retirement_age"),
+                current_savings=entities.get("current_savings"))
+
+        # ========== 学习教练工具 ==========
+        elif goal_type == "learning_study_plan":
+            return registry.call_tool("learning_study_plan", "execute",
+                subject=entities.get("subject"),
+                target_level=entities.get("target_level"),
+                available_time=entities.get("available_time"))
+
+        elif goal_type == "learning_skill_learning":
+            return registry.call_tool("learning_skill_learning", "execute",
+                skill_name=entities.get("skill_name"),
+                target_level=entities.get("target_level"))
+
+        elif goal_type == "learning_exam_prepare":
+            return registry.call_tool("learning_exam_prepare", "execute",
+                exam_name=entities.get("exam_name"),
+                exam_date=entities.get("exam_date"),
+                days_remaining=entities.get("days_remaining"))
+
+        elif goal_type == "learning_time_management":
+            return registry.call_tool("learning_time_management", "execute",
+                current_challenge=entities.get("current_challenge"),
+                work_style=entities.get("work_style"))
+
+        # ========== 旅行规划工具 ==========
+        elif goal_type == "travel_trip_plan":
+            return registry.call_tool("travel_trip_plan", "execute",
+                destination=entities.get("destination"),
+                duration=entities.get("duration"),
+                travel_style=entities.get("travel_style"))
+
+        elif goal_type == "travel_hotel_book":
+            return registry.call_tool("travel_hotel_book", "execute",
+                destination=entities.get("destination"),
+                check_in=entities.get("check_in"),
+                check_out=entities.get("check_out"),
+                budget=entities.get("budget"))
+
+        elif goal_type == "travel_visa_consult":
+            return registry.call_tool("travel_visa_consult", "execute",
+                destination=entities.get("destination"),
+                visa_type=entities.get("visa_type"))
+
+        elif goal_type == "travel_spot_recommend":
+            return registry.call_tool("travel_spot_recommend", "execute",
+                destination=entities.get("destination"),
+                travel_style=entities.get("travel_style"))
+
         else:
-            # Generic fallback
-            return registry.call_tool("vehicle_status", "get_status")
+            # Generic fallback - return error result
+            class ErrorResult:
+                def __init__(self):
+                    self.description = f"Unknown goal type: {goal_type}"
+                    self.state = {"error": f"Unsupported goal type: {goal_type}"}
+            return ErrorResult()
 
 
 def create_executor_agent(executor_id: str, llm: Any = None) -> ExecutorAgent:

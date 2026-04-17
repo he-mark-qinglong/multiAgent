@@ -192,15 +192,17 @@ class IntentAgent(BaseReActAgent):
         if not intent_nodes:
             intent_nodes = self._keyword_intents(query)
 
-        # Enhancement: If LLM returned fewer intents than keyword extraction would find,
-        # merge keyword intents to ensure all user requests are covered
+        # Enhancement: Always merge keyword intents that LLM didn't find
+        # This ensures consultation-type intents (legal, medical, etc.) are captured
         keyword_intents = self._keyword_intents(query)
-        if len(intent_nodes) < len(keyword_intents):
-            logger.info(f"IntentAgent: LLM returned {len(intent_nodes)} intents, keyword found {len(keyword_intents)} - merging")
-            existing_types = {n.intent for n in intent_nodes}
-            for node in keyword_intents:
-                if node.intent not in existing_types:
-                    intent_nodes.append(node)
+        existing_types = {n.intent for n in intent_nodes}
+        merged_count = 0
+        for node in keyword_intents:
+            if node.intent not in existing_types:
+                intent_nodes.append(node)
+                merged_count += 1
+        if merged_count > 0:
+            logger.info(f"IntentAgent: Merged {merged_count} keyword intents not found by LLM")
 
         intent_chain = IntentChain(
             nodes=intent_nodes,
@@ -235,6 +237,28 @@ class IntentAgent(BaseReActAgent):
             return "news"
         if any(w in raw for w in ["紧急", "emergency", "救援"]):
             return "emergency"
+        if any(w in raw for w in ["天气", "weather", "气温", "温度", "forecast"]):
+            return "weather"
+
+        # ========== 咨询团队类型 ==========
+        # Legal
+        if any(w in raw for w in ["法律", "legal", "合同", "contract", "协议", "条款", "违约金", "维权", "rights", "protection", "compliance", "合规", "资质"]):
+            return "legal"
+        # Medical
+        if any(w in raw for w in ["医疗", "medical", "医院", "hospital", "医生", "doctor", "挂号", "registration", "症状", "symptom", "疾病", "disease", "治疗", "treatment", "药品", "medicine", "体检"]):
+            return "medical"
+        # Emotional
+        if any(w in raw for w in ["情绪", "emotion", "心情", "压力", "stress", "焦虑", "anxiety", "抑郁", "depression", "孤独", "lonely", "恋爱", "love", "relationship", "分手", "divorce", "婚姻", "marriage", "夫妻", "感情", "沟通", "communication", "吵架", "fight", "冷战", "家庭", "family", "亲子", "parenting", "父母", "朋友", "friend", "社交", "social", "自我", "self", "成长", "growth", "自信", "confidence", "价值", "value", "意义", "meaning", "迷茫", "lost", "职业", "career", "人生", "life"]):
+            return "emotional"
+        # Finance
+        if any(w in raw for w in ["投资", "investment", "理财", "financial", "基金", "fund", "股票", "stock", "债券", "bond", "收益", "return", "预算", "budget", "开销", "expense", "支出", "spending", "收入", "income", "储蓄", "savings", "负债", "debt", "贷款", "loan", "税务", "tax", "个税", "income_tax", "抵扣", "deduction", "报税", "tax_return", "退休", "retirement", "养老金", "pension", "社保", "social_insurance", "公积金", "housing_fund"]):
+            return "finance"
+        # Learning
+        if any(w in raw for w in ["学习", "learning", "study", "计划", "plan", "规划", "planning", "目标", "goal", "效率", "efficiency", "考试", "exam", "备考", "preparation", "复习", "review", "技能", "skill", "编程", "programming", "语言", "language", "英语", "english", "时间管理", "time_management", "拖延", "procrastination", "专注", "focus"]):
+            return "learning"
+        # Travel
+        if any(w in raw for w in ["旅行", "travel", "trip", "旅游", "tourism", "行程", "itinerary", "攻略", "guide", "酒店", "hotel", "机票", "flight", "预订", "booking", "签证", "visa", "护照", "passport", "景点", "attraction", "景区", "spot", "餐厅", "restaurant", "美食", "food", "打卡", "check-in"]):
+            return "travel"
 
         return "unknown"
 
@@ -243,7 +267,7 @@ class IntentAgent(BaseReActAgent):
         nodes = []
         query_lower = query.lower()
 
-        # Check for each intent type independently
+        # ========== 车载相关意图 ==========
         # Climate
         if any(w in query_lower for w in ["空调", "温度", "冷", "热", "暖气"]):
             params = {}
@@ -284,6 +308,43 @@ class IntentAgent(BaseReActAgent):
         # Door
         if any(w in query_lower for w in ["锁", "车门"]):
             nodes.append(IntentNode(intent="door", entities={}, confidence=0.9))
+
+        # ========== 咨询团队意图 ==========
+        # Legal - 法律、合同、维权、合规
+        if any(w in query_lower for w in ["合同", "协议", "条款", "违约金", "签约", "法务", "legal", "维权", "投诉", "侵权", "合规", "资质", "许可"]):
+            nodes.append(IntentNode(intent="legal", entities={"query": query}, confidence=0.9))
+
+        # Medical - 医疗、症状、医院、挂号
+        if any(w in query_lower for w in ["症状", "不舒服", "难受", "疼痛", "发烧", "医院", "挂号", "医生", "科室", "疾病", "病因", "治疗", "药品", "药物", "手术", "体检", "medical"]):
+            import re as re_module
+            params = {"query": query}
+            # 提取症状关键词
+            symptom_keywords = ["血糖", "头疼", "胸闷", "咳嗽", "发烧", "腹痛", "疲劳", "失眠"]
+            for kw in symptom_keywords:
+                if kw in query:
+                    params["symptom"] = kw
+                    break
+            # 提取时间信息
+            duration_match = re_module.search(r'(\d+)天|住院|持续|一段时间', query)
+            if duration_match:
+                params["duration"] = duration_match.group()
+            nodes.append(IntentNode(intent="medical", entities=params, confidence=0.9))
+
+        # Emotional - 情绪、压力、恋爱、家庭、人际
+        if any(w in query_lower for w in ["情绪", "心情", "难过", "焦虑", "压力", "抑郁", "孤独", "崩溃", "恋爱", "分手", "婚姻", "夫妻", "感情", "沟通", "吵架", "冷战", "家庭", "亲子", "父母", "孩子", "朋友", "友谊", "同事", "社交", "人际关系", "自我", "成长", "自信", "价值", "意义", "迷茫", "职业", "人生"]):
+            nodes.append(IntentNode(intent="emotional", entities={"query": query}, confidence=0.9))
+
+        # Finance - 投资、理财、预算、税务、退休
+        if any(w in query_lower for w in ["投资", "理财", "基金", "股票", "债券", "收益", "预算", "开销", "支出", "收入", "储蓄", "负债", "贷款", "税务", "个税", "抵扣", "报税", "退休", "养老金", "社保", "公积金"]):
+            nodes.append(IntentNode(intent="finance", entities={"query": query}, confidence=0.9))
+
+        # Learning - 学习、考试、备考、技能、时间管理
+        if any(w in query_lower for w in ["学习", "计划", "规划", "目标", "效率", "考试", "备考", "复习", "技能", "编程", "语言", "英语", "日语", "考证", "时间管理", "拖延", "专注", "学习方法"]):
+            nodes.append(IntentNode(intent="learning", entities={"query": query}, confidence=0.9))
+
+        # Travel - 旅行、酒店、签证、景点
+        if any(w in query_lower for w in ["旅行", "旅游", "行程", "攻略", "酒店", "机票", "预订", "订票", "签证", "护照", "景点", "景区", "餐厅", "美食", "打卡", "推荐", "旅行计划"]):
+            nodes.append(IntentNode(intent="travel", entities={"query": query}, confidence=0.9))
 
         if not nodes:
             nodes.append(IntentNode(intent="general", entities={"query": query}, confidence=0.5))

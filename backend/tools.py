@@ -17,6 +17,29 @@ from tests.mock_tools import (
     DoorTool,
     EmergencyTool,
     NewsTool,
+    LegalContractReviewTool,
+    LegalRightsProtectionTool,
+    LegalComplianceCheckTool,
+    MedicalSymptomAnalysisTool,
+    MedicalDiseaseInfoTool,
+    MedicalHospitalRecommendTool,
+    EmotionalEmotionListenTool,
+    EmotionalRelationshipConsultTool,
+    EmotionalFamilyCommunicationTool,
+    EmotionalSocialAdviceTool,
+    EmotionalSelfDiscoveryTool,
+    FinanceInvestmentAnalysisTool,
+    FinanceBudgetPlanningTool,
+    FinanceTaxConsultTool,
+    FinanceRetirementPlanTool,
+    LearningStudyPlanTool,
+    LearningSkillLearningTool,
+    LearningExamPrepareTool,
+    LearningTimeManagementTool,
+    TravelTripPlanTool,
+    TravelHotelBookTool,
+    TravelVisaConsultTool,
+    TravelSpotRecommendTool,
     MCP_TOOLS,
 )
 
@@ -29,6 +52,7 @@ class ToolRegistry:
     """全局工具注册表。"""
 
     def __init__(self) -> None:
+        # 车载控制类
         self.climate = ClimateTool()
         self.navigation = NavigationTool()
         self.music = MusicTool()
@@ -37,6 +61,35 @@ class ToolRegistry:
         self.door = DoorTool()
         self.emergency = EmergencyTool()
         self.news = NewsTool()
+        # 法律类
+        self.legal_contract_review = LegalContractReviewTool()
+        self.legal_rights_protection = LegalRightsProtectionTool()
+        self.legal_compliance_check = LegalComplianceCheckTool()
+        # 医疗类
+        self.medical_symptom_analysis = MedicalSymptomAnalysisTool()
+        self.medical_disease_info = MedicalDiseaseInfoTool()
+        self.medical_hospital_recommend = MedicalHospitalRecommendTool()
+        # 情绪类
+        self.emotional_emotion_listen = EmotionalEmotionListenTool()
+        self.emotional_relationship_consult = EmotionalRelationshipConsultTool()
+        self.emotional_family_communication = EmotionalFamilyCommunicationTool()
+        self.emotional_social_advice = EmotionalSocialAdviceTool()
+        self.emotional_self_discovery = EmotionalSelfDiscoveryTool()
+        # 财务类
+        self.finance_investment_analysis = FinanceInvestmentAnalysisTool()
+        self.finance_budget_planning = FinanceBudgetPlanningTool()
+        self.finance_tax_consult = FinanceTaxConsultTool()
+        self.finance_retirement_plan = FinanceRetirementPlanTool()
+        # 学习类
+        self.learning_study_plan = LearningStudyPlanTool()
+        self.learning_skill_learning = LearningSkillLearningTool()
+        self.learning_exam_prepare = LearningExamPrepareTool()
+        self.learning_time_management = LearningTimeManagementTool()
+        # 旅行类
+        self.travel_trip_plan = TravelTripPlanTool()
+        self.travel_hotel_book = TravelHotelBookTool()
+        self.travel_visa_consult = TravelVisaConsultTool()
+        self.travel_spot_recommend = TravelSpotRecommendTool()
 
     def list_tools(self) -> list[dict]:
         """返回所有工具定义（MCP 格式）。"""
@@ -45,6 +98,7 @@ class ToolRegistry:
     def call_tool(self, name: str, action: str, **kwargs) -> ToolResult:
         """统一调用接口。"""
         tool_map = {
+            # 车载控制类
             "climate_control": self.climate,
             "navigation": self.navigation,
             "music_player": self.music,
@@ -53,6 +107,35 @@ class ToolRegistry:
             "door_control": self.door,
             "emergency": self.emergency,
             "news": self.news,
+            # 法律类
+            "legal_contract_review": self.legal_contract_review,
+            "legal_rights_protection": self.legal_rights_protection,
+            "legal_compliance_check": self.legal_compliance_check,
+            # 医疗类
+            "medical_symptom_analysis": self.medical_symptom_analysis,
+            "medical_disease_info": self.medical_disease_info,
+            "medical_hospital_recommend": self.medical_hospital_recommend,
+            # 情绪类
+            "emotional_emotion_listen": self.emotional_emotion_listen,
+            "emotional_relationship_consult": self.emotional_relationship_consult,
+            "emotional_family_communication": self.emotional_family_communication,
+            "emotional_social_advice": self.emotional_social_advice,
+            "emotional_self_discovery": self.emotional_self_discovery,
+            # 财务类
+            "finance_investment_analysis": self.finance_investment_analysis,
+            "finance_budget_planning": self.finance_budget_planning,
+            "finance_tax_consult": self.finance_tax_consult,
+            "finance_retirement_plan": self.finance_retirement_plan,
+            # 学习类
+            "learning_study_plan": self.learning_study_plan,
+            "learning_skill_learning": self.learning_skill_learning,
+            "learning_exam_prepare": self.learning_exam_prepare,
+            "learning_time_management": self.learning_time_management,
+            # 旅行类
+            "travel_trip_plan": self.travel_trip_plan,
+            "travel_hotel_book": self.travel_hotel_book,
+            "travel_visa_consult": self.travel_visa_consult,
+            "travel_spot_recommend": self.travel_spot_recommend,
         }
         tool = tool_map.get(name)
         if not tool:
@@ -94,6 +177,10 @@ class ToolRegistry:
                 location=kwargs.get("location", "北京"),
                 forecast_days=int(kwargs.get("forecast_days", 1))
             ),
+            # 新工具通用 execute 方法
+            "execute": lambda: tool.execute(**kwargs) if hasattr(tool, 'execute') else ToolResult(
+                success=False, state={}, description=f"工具 {name} 不支持 execute 方法", tool_name=name
+            ),
         }
 
         handler = action_map.get(action)
@@ -106,7 +193,33 @@ class ToolRegistry:
             )
 
         try:
-            return handler()
+            result = handler()
+            # 如果返回的是 dict，转换为 ToolResult
+            if isinstance(result, dict):
+                # 尝试从多个可能的字段中提取 description
+                description = (
+                    result.get("description") or
+                    result.get("message") or
+                    result.get("summary") or
+                    result.get("symptom_summary") or
+                    result.get("opinion_type") or
+                    result.get("analysis_type") or
+                    result.get("consultation_type") or
+                    result.get("plan_type") or
+                    result.get("recommendation_type") or
+                    result.get("info_type") or
+                    result.get("response_type") or
+                    result.get("skill_type") or
+                    str(result.get("success", ""))
+                )
+                return ToolResult(
+                    success=result.get("success", True),
+                    state=result.get("data", result.get("state", {})),
+                    description=description,
+                    tool_name=name,
+                    error=result.get("error"),
+                )
+            return result
         except Exception as e:
             return ToolResult(
                 success=False,

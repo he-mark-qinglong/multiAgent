@@ -89,7 +89,8 @@ class CompositeTeam:
             for team_id in sub_team_ids:
                 if team_id in self.sub_teams:
                     sub_team = self.sub_teams[team_id]
-                    sub_content = sub_queries.get(team_id, query.content)
+                    # 传递原始查询内容，让 SubTeam 的 pipeline 能正确识别 intent
+                    sub_content = query.content
                     # 创建子 Query
                     sub_query = QueryRequest(
                         id=f"{query.id}_{team_id}",
