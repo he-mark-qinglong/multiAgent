@@ -281,7 +281,8 @@ class IntentAgent(BaseReActAgent):
         if any(w in query_lower for w in ["导航", "去", "机场", "回家", "公司"]):
             import re as re_module
             dest = ""
-            m = re_module.search(r'去(.+?)(?:的|且|$)', query)
+            # Match "去" followed by destination, stop at comma, punctuation, or end
+            m = re_module.search(r'去([^\s,，。；]+)', query)
             if m:
                 dest = m.group(1).strip()
             nodes.append(IntentNode(intent="navigation", entities={"destination": dest}, confidence=0.9))
@@ -315,7 +316,7 @@ class IntentAgent(BaseReActAgent):
             nodes.append(IntentNode(intent="legal", entities={"query": query}, confidence=0.9))
 
         # Medical - 医疗、症状、医院、挂号
-        if any(w in query_lower for w in ["症状", "不舒服", "难受", "疼痛", "发烧", "医院", "挂号", "医生", "科室", "疾病", "病因", "治疗", "药品", "药物", "手术", "体检", "medical"]):
+        if any(w in query_lower for w in ["症状", "不舒服", "难受", "疼痛", "发烧", "医院", "挂号", "医生", "科室", "疾病", "病因", "治疗", "药品", "药物", "手术", "体检", "medical", "头晕", "失眠", "头疼", "胸闷", "咳嗽", "腹痛", "疲劳", "血糖", "血压"]):
             import re as re_module
             params = {"query": query}
             # 提取症状关键词

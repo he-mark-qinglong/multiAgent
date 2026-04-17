@@ -105,9 +105,12 @@ class SynthesizerAgent(BaseReActAgent):
             elif intent_type == "navigation":
                 state = result.get("state", {})
                 dest = state.get("destination", "目的地")
-                eta = state.get("eta_minutes", "N/A")
+                # duration can be "25分钟" (already formatted) or number
+                duration = state.get("duration", "N/A")
+                if duration != "N/A" and not duration.endswith("分钟"):
+                    duration = f"{duration}分钟"
                 traffic = state.get("traffic", "")
-                parts.append(f"🧭 已规划前往「{dest}」的路线，预计{eta}分钟，{traffic}")
+                parts.append(f"🧭 已规划前往「{dest}」的路线，预计{duration}，{traffic}")
             elif intent_type == "music":
                 state = result.get("state", {})
                 song = state.get("current_song", ["未知歌曲"])[0] if state.get("current_song") else "未知歌曲"

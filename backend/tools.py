@@ -157,7 +157,7 @@ class ToolRegistry:
             # ClimateTool 新格式: power, temperature, fan_speed
             "control": lambda: self._climate_control(tool, kwargs),
             # NavigationTool
-            "navigate": lambda: tool.navigate_to(kwargs.get("destination", "")),
+            "navigate": lambda: tool.execute(destination=kwargs.get("destination", "")),
             "get_traffic": lambda: tool.get_traffic(),
             "cancel": lambda: tool.cancel(),
             # MusicTool
@@ -169,7 +169,7 @@ class ToolRegistry:
             "lock": lambda: tool.lock(),
             "unlock": lambda: tool.unlock(),
             # EmergencyTool
-            "call": lambda: tool.call(kwargs.get("reason", "")),
+            "call": lambda: tool.execute(emergency_type=kwargs.get("reason", "紧急求助")),
             # NewsTool / VehicleStatusTool
             "get_news": lambda: tool.get_news(simulate_delay=True),
             # WeatherTool
@@ -210,6 +210,8 @@ class ToolRegistry:
                     result.get("info_type") or
                     result.get("response_type") or
                     result.get("skill_type") or
+                    result.get("trip_summary") or
+                    result.get("learning_path") or
                     str(result.get("success", ""))
                 )
                 return ToolResult(
