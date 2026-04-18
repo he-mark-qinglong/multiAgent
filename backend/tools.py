@@ -93,7 +93,8 @@ class ToolRegistry:
 
     def list_tools(self) -> list[dict]:
         """返回所有工具定义（MCP 格式）。"""
-        return list(MCP_TOOLS.values())
+        # MCP_TOOLS is already a list of tool schemas
+        return MCP_TOOLS if isinstance(MCP_TOOLS, list) else list(MCP_TOOLS.values())
 
     def call_tool(self, name: str, action: str, **kwargs) -> ToolResult:
         """统一调用接口。"""
@@ -101,7 +102,7 @@ class ToolRegistry:
             # 车载控制类
             "climate_control": self.climate,
             "navigation": self.navigation,
-            "music_player": self.music,
+            "music_control": self.music,
             "vehicle_status": self.vehicle,
             "get_weather": self.weather,
             "door_control": self.door,
@@ -146,28 +147,30 @@ class ToolRegistry:
                 tool_name=name,
             )
 
-        # 动作映射
+        # 动作映射 - 使用统一的 execute 方法
         action_map = {
-            # ClimateTool
-            "turn_on": lambda: tool.turn_on(kwargs.get("value")),
-            "turn_off": lambda: tool.turn_off(),
-            "set_temperature": lambda: tool.set_temperature(int(kwargs.get("value", 24))),
-            "set_fan_speed": lambda: tool.set_fan_speed(str(kwargs.get("value", "auto"))),
-            "get_status": lambda: tool.get_status(),
-            # ClimateTool 新格式: power, temperature, fan_speed
+            # ClimateTool: execute(action, temperature, wind_speed, mode)
+            "turn_on": lambda: tool.execute(action="on", temperature=kwargs.get("temperature", 24), wind_speed=kwargs.get("wind_speed", 3), mode=kwargs.get("mode", "auto")),
+            "turn_off": lambda: tool.execute(action="off"),
+            "set_temperature": lambda: tool.execute(action="set_temp", temperature=int(kwargs.get("value", 24))),
+            "set_fan_speed": lambda: tool.execute(action="set_wind", wind_speed=int(kwargs.get("value", 3))),
+            "get_status": lambda: tool.get_status() if hasattr(tool, 'get_status') else tool.execute(),  # WeatherTool/VehicleStatusTool 有 get_status()
             "control": lambda: self._climate_control(tool, kwargs),
-            # NavigationTool
+            # NavigationTool: execute(destination, route_preference)
             "navigate": lambda: tool.execute(destination=kwargs.get("destination", "")),
-            "get_traffic": lambda: tool.get_traffic(),
-            "cancel": lambda: tool.cancel(),
-            # MusicTool
-            "play": lambda: tool.play(),
+            "get_traffic": lambda: tool.execute(destination=kwargs.get("destination", "当前位置")),
+            "cancel": lambda: tool.cancel() if hasattr(tool, 'cancel') else None,
+            # MusicTool: execute(action, song, volume)
+            "play": lambda: tool.execute(action="play", song=kwargs.get("song"), volume=kwargs.get("volume")),
+            "pause": lambda: tool.execute(action="pause"),
+            "skip": lambda: tool.execute(action="next"),
+            "set_volume": lambda: tool.execute(action="volume", volume=int(kwargs.get("value", 50))),
             "pause": lambda: tool.pause(),
             "skip": lambda: tool.skip(),
             "set_volume": lambda: tool.set_volume(int(kwargs.get("value", 50))),
-            # DoorTool
-            "lock": lambda: tool.lock(),
-            "unlock": lambda: tool.unlock(),
+            # DoorTool: execute(action, door)
+            "lock": lambda: tool.execute(action="lock", door=kwargs.get("door", "all")),
+            "unlock": lambda: tool.execute(action="unlock", door=kwargs.get("door", "all")),
             # EmergencyTool
             "call": lambda: tool.execute(emergency_type=kwargs.get("reason", "紧急求助")),
             # NewsTool / VehicleStatusTool
@@ -232,28 +235,105 @@ class ToolRegistry:
             )
 
     def _climate_control(self, tool, kwargs) -> ToolResult:
-        """处理 climate_control 的复合参数 (power, temperature, fan_speed)。"""
+        """处理 climate_control 的复合参数 (power, temperature, fan_speed)。
+
+        ClimateTool uses execute(action, temperature, wind_speed, mode) interface.
+        """
         power = kwargs.get("power")
         temperature = kwargs.get("temperature")
         fan_speed = kwargs.get("fan_speed")
+        mode = kwargs.get("mode", "auto")
 
-        # 如果指定了 power，先开/关空调
+        # 如果指定了 power，决定 action
         if power is not None:
-            if power:
-                tool.turn_on(temperature)
-            else:
-                tool.turn_off()
+            action = "on" if power else "off"
+        else:
+            action = "on"  # 默认开
 
-        # 如果指定了温度
+        # 如果同时指定了温度，用 set_temp
         if temperature is not None:
-            tool.set_temperature(temperature)
+            action = "set_temp"
 
-        # 如果指定了风速
-        if fan_speed is not None:
-            tool.set_fan_speed(fan_speed)
+        # 使用统一的 execute 方法
+        result = tool.execute(
+            action=action,
+            temperature=temperature if temperature is not None else 24,
+            wind_speed=fan_speed if fan_speed is not None else 3,
+            mode=mode
+        )
 
-        return tool.get_status()
+        if isinstance(result, dict):
+            return ToolResult(
+                success=result.get("success", True),
+                state=result.get("data", {}),
+                description=result.get("message", ""),
+                tool_name="climate_control",
+                error=result.get("error"),
+            )
+        return result
 
 
 # 全局单例
 registry = ToolRegistry()
+
+
+# ============================================================================
+# Goal Type → Tool/Action 映射表 (hardcoded fallback)
+# 这是一个简单的映射表，用于在没有binding配置时提供fallback
+# 优先使用binding配置，只有在binding失败时才使用此表
+# ============================================================================
+
+GOAL_TYPE_TO_TOOL_ACTION = {
+    # 车载控制
+    "climate_control": ("climate_control", "control"),
+    "navigation": ("navigation", "navigate"),
+    "music_control": ("music_control", "play"),
+    "vehicle_status": ("vehicle_status", "get_status"),
+    "door_control": ("door_control", "lock"),
+    "news": ("news", "execute"),
+    "weather": ("get_weather", "get_weather"),
+    "emergency": ("emergency", "call"),
+    # 法律顾问
+    "legal_contract_review": ("legal_contract_review", "execute"),
+    "legal_rights_protection": ("legal_rights_protection", "execute"),
+    "legal_compliance_check": ("legal_compliance_check", "execute"),
+    # 医疗顾问
+    "medical_symptom_analysis": ("medical_symptom_analysis", "execute"),
+    "medical_disease_info": ("medical_disease_info", "execute"),
+    "medical_hospital_recommend": ("medical_hospital_recommend", "execute"),
+    # 情绪支持
+    "emotional_emotion_listen": ("emotional_emotion_listen", "execute"),
+    "emotional_relationship_consult": ("emotional_relationship_consult", "execute"),
+    "emotional_family_communication": ("emotional_family_communication", "execute"),
+    "emotional_social_advice": ("emotional_social_advice", "execute"),
+    "emotional_self_discovery": ("emotional_self_discovery", "execute"),
+    # 财务规划
+    "finance_investment_analysis": ("finance_investment_analysis", "execute"),
+    "finance_budget_planning": ("finance_budget_planning", "execute"),
+    "finance_tax_consult": ("finance_tax_consult", "execute"),
+    "finance_retirement_plan": ("finance_retirement_plan", "execute"),
+    # 学习教练
+    "learning_study_plan": ("learning_study_plan", "execute"),
+    "learning_skill_learning": ("learning_skill_learning", "execute"),
+    "learning_exam_prepare": ("learning_exam_prepare", "execute"),
+    "learning_time_management": ("learning_time_management", "execute"),
+    # 旅行规划
+    "travel_trip_plan": ("travel_trip_plan", "execute"),
+    "travel_hotel_book": ("travel_hotel_book", "execute"),
+    "travel_visa_consult": ("travel_visa_consult", "execute"),
+    "travel_spot_recommend": ("travel_spot_recommend", "execute"),
+}
+
+
+def get_tool_and_action_for_goal(goal_type: str) -> tuple[str, str] | None:
+    """获取goal_type对应的tool名称和action。
+
+    这是最后的fallback，仅在binding配置不存在或失败时使用。
+
+    Args:
+        goal_type: 目标类型
+
+    Returns:
+        (tool_name, action) tuple 或 None 如果未知
+    """
+    return GOAL_TYPE_TO_TOOL_ACTION.get(goal_type)
