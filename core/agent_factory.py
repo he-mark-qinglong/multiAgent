@@ -26,10 +26,16 @@ def create_agents() -> dict[str, Any]:
     """
     client = get_minimax_client()
 
+    # Create BindingManager for dynamic tool binding (Hybrid mode)
+    from core.binding_manager import init_binding_manager, get_binding_manager
+    from backend.tools import registry as tool_registry
+
+    binding_manager = init_binding_manager(tool_registry=tool_registry)
+
     return {
         "intent": IntentAgent(llm=client),
         "planner": PlannerAgent(llm=client),
-        "executor": ExecutorAgent(executor_id="main", llm=client),
+        "executor": ExecutorAgent(executor_id="main", llm=client, binding_manager=binding_manager),
         "synthesizer": SynthesizerAgent(llm=client),
     }
 
