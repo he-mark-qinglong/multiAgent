@@ -8,6 +8,12 @@ from typing import Any
 from agents.langgraph_agents import BaseReActAgent
 from core.models import AgentState, Goal, GoalStatus
 
+# LangSmith traceable - graceful degradation
+try:
+    from langsmith import traceable
+except ImportError:
+    traceable = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -183,6 +189,7 @@ class ExecutorAgent(BaseReActAgent):
             logger.warning(f"LLM description failed, using fallback: {e}")
             return tool_result.description
 
+    @traceable(name="executor.goal_execute") if traceable else lambda fn: fn
     def _execute_goal(self, goal: Goal, registry) -> Any:
         """Execute a single goal using ToolRegistry.
 

@@ -53,19 +53,22 @@ class CollaborationPipeline:
         self,
         langsmith_project: str = "multi-agent",
         enable_tracing: bool = True,
+        progress_callback: Any = None,
     ):
         """Initialize the pipeline.
 
         Args:
             langsmith_project: LangSmith project name.
             enable_tracing: Enable LangSmith tracing.
+            progress_callback: Callback for node progress events.
         """
         self.tracer = LangSmithTracer(project_name=langsmith_project)
+        self.progress_callback = progress_callback
 
         if enable_tracing:
             setup_langsmith(project_name=langsmith_project)
 
-        self.graph = PipelineStateGraph()
+        self.graph = PipelineStateGraph(progress_callback=progress_callback)
         self.approval_manager = HumanApprovalManager(self.graph)
 
         logger.info("CollaborationPipeline initialized")
@@ -126,11 +129,16 @@ class CollaborationPipeline:
             result = self.invoke(query, thread_id)
 
             # Stream structured output (not tokens)
+            # Convert IntentChain to dict for JSON serialization
+            intent_chain = result.get("intent_chain")
+            if intent_chain and hasattr(intent_chain, "model_dump"):
+                intent_chain = intent_chain.model_dump()
+
             yield {
                 "type": "result",
                 "data": {
                     "final_response": result.get("final_response", ""),
-                    "intent_chain": result.get("intent_chain"),
+                    "intent_chain": intent_chain,
                     "execution_results": result.get("execution_results", {}),
                 }
             }

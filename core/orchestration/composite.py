@@ -45,17 +45,30 @@ class CompositeTeam:
         sub_team_keywords: Optional[dict[str, list[str]]] = None,
         result_callback: Optional[callable] = None,
         sub_team_data: Optional[list[dict]] = None,
+        progress_callback: Optional[callable] = None,
     ):
         self.team_id = team_id
         self.sub_teams: dict[str, AgentTeam] = {}
         self.sub_team_keywords = sub_team_keywords or {}
         self.sub_team_data = sub_team_data or []  # 完整配置（含task_templates）
         self.result_callback = result_callback  # 流式回调：每个 SubTeam 完成后立即调用
+        self.progress_callback = progress_callback  # 节点进度回调
         self._cancelled = False
 
-        # 创建 SubTeam
+        # 创建 SubTeam，传递包装过的 progress_callback（带上 sub_team_id）
         for config in sub_team_configs:
-            self.sub_teams[config.team_id] = AgentTeam(config)
+            sub_team_id = config.team_id
+
+            # 包装 progress_callback，添加 sub_team 信息
+            def make_sub_callback(cb, st_id):
+                def wrapper(stage: str, data: dict) -> None:
+                    # 添加 sub_team 信息到 data 中
+                    data["sub_team"] = st_id
+                    cb(stage, data)
+                return wrapper
+
+            wrapped_callback = make_sub_callback(progress_callback, sub_team_id) if progress_callback else None
+            self.sub_teams[sub_team_id] = AgentTeam(config, progress_callback=wrapped_callback)
 
         logger.info(f"CompositeTeam {team_id} created with {len(self.sub_teams)} sub-teams")
 

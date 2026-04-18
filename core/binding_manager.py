@@ -14,6 +14,12 @@ from typing import Any, Optional
 from core.binding_schema import BindingConfig
 from core.binding_executor import BindingExecutor, set_tool_registry, ExecutionResult
 
+# LangSmith traceable - graceful degradation
+try:
+    from langsmith import traceable
+except ImportError:
+    traceable = None
+
 logger = logging.getLogger(__name__)
 
 # Default bindings directory
@@ -117,6 +123,7 @@ class BindingManager:
         self.register_binding(binding)
         return binding
 
+    @traceable(name="binding.execute") if traceable else lambda fn: fn
     def execute_binding(self, goal_type: str, context: dict) -> ExecutionResult:
         """Execute a binding by goal type.
 

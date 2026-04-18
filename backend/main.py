@@ -48,6 +48,31 @@ def feishu_message_handler(text: str, sender_id: str, chat_id: str, msg_id: str,
 
     print(f"[Feishu WS] Message from {sender_id}: {text[:100]}")
 
+    # 立即发送"正在处理"反馈，让用户知道系统已收到
+    import asyncio
+    feishu_client = get_feishu_client()
+
+    async def send_acknowledgment():
+        try:
+            ack_text = f"收到您的请求，正在处理..."
+            await feishu_client.send_text(
+                receive_id=sender_id,
+                text=ack_text,
+                msg_id=msg_id,
+            )
+            print(f"[Feishu WS] Ack sent to {sender_id[:20]}...")
+        except Exception as e:
+            print(f"[Feishu WS] Failed to send ack: {e}")
+
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            asyncio.create_task(send_acknowledgment())
+        else:
+            asyncio.run(send_acknowledgment())
+    except Exception as e:
+        print(f"[Feishu WS] Ack error: {e}")
+
     # Use Orchestration Engine to enqueue the query
     from core.orchestration import get_engine, QueryPriority, QueryType
 
@@ -70,7 +95,6 @@ def feishu_message_handler(text: str, sender_id: str, chat_id: str, msg_id: str,
     _pending_responses[query_id] = (sender_id, msg_id)
 
     # 启动引擎（如果还没启动）
-    import asyncio
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -92,12 +116,54 @@ def _setup_engine_event_handler() -> None:
     engine = get_engine()
 
     def on_event(event_type: str, data: dict) -> None:
-        if event_type == "query_completed":
+        if event_type == "query_started":
+            _handle_query_started(data)
+        elif event_type == "query_completed":
             _handle_query_completed(data)
         elif event_type == "subteam_stream":
             _handle_subteam_stream(data)
+        elif event_type == "pipeline_progress":
+            _handle_pipeline_progress(data)
 
     engine.event_handler = on_event
+
+
+def _handle_query_started(data: dict) -> None:
+    """处理 query 开始事件，发送开始反馈到飞书."""
+    query_id = data.get("query_id")
+    team_id = data.get("team_id", "")
+
+    # 查找 pending 的响应
+    sender_id, msg_id = None, None
+    for qid, (sid, mid) in list(_pending_responses.items()):
+        if qid == query_id:
+            sender_id, msg_id = sid, mid
+            break
+
+    if not sender_id:
+        return
+
+    # 发送开始反馈
+    import asyncio
+    feishu_client = get_feishu_client()
+
+    async def send():
+        try:
+            start_text = f"[{team_id}] 开始处理您的请求..."
+            await feishu_client.send_text(
+                receive_id=sender_id,
+                text=start_text,
+                msg_id=msg_id,
+            )
+            print(f"[Feishu WS] Started: {start_text}")
+        except Exception as e:
+            print(f"[Feishu WS] Failed to send start feedback: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(send())
+    except RuntimeError:
+        asyncio.run(send())
 
 
 def _handle_query_completed(data: dict) -> None:
@@ -141,37 +207,169 @@ def _handle_query_completed(data: dict) -> None:
 
 def _handle_subteam_stream(data: dict) -> None:
     """处理 SubTeam 流式结果，立即发送到飞书（不等待所有team完成）。"""
+    query_id = data.get("query_id", "")
     team_id = data.get("team_id", "")
     response_text = data.get("response", "")
 
     if not response_text:
         return
 
-    # 查找 pending 的响应（使用 team_id 匹配）
+    # 查找对应的 sender_id 和 msg_id（通过 query_id 匹配）
     sender_id, msg_id = None, None
-    for qid, (sid, mid) in list(_pending_responses.items()):
-        sender_id, msg_id = sid, mid
-        break  # 第一个匹配的
+    if query_id and query_id in _pending_responses:
+        sender_id, msg_id = _pending_responses[query_id]
+    else:
+        # 回退：取第一个 pending 的响应
+        for qid, (sid, mid) in list(_pending_responses.items())[:1]:
+            sender_id, msg_id = sid, mid
+            break
 
     if not sender_id:
         return
 
-    # 发送流式响应（追加形式）
+    # 发送流式响应（追加形式，带执行结果图标）
     import asyncio
     feishu_client = get_feishu_client()
 
     async def send():
         try:
-            # 流式响应加个前缀表示是中间结果
-            stream_text = f"[{team_id}] {response_text}"
+            # 根据响应内容选择图标
+            if "❌" in response_text or "失败" in response_text:
+                icon = "❌"
+            elif "成功" in response_text or "已完成" in response_text or "已" in response_text:
+                icon = "✅"
+            else:
+                icon = "📤"
+
+            stream_text = f"{icon} {response_text}"
             await feishu_client.send_text(
                 receive_id=sender_id,
                 text=stream_text,
                 msg_id=msg_id,
             )
-            print(f"[Feishu WS] Stream from {team_id} sent to {sender_id[:20]}...")
+            print(f"[Feishu WS] Stream from {team_id}: {response_text[:50]}...")
         except Exception as e:
             print(f"[Feishu WS] Failed to send stream response: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+        asyncio.create_task(send())
+    except RuntimeError:
+        asyncio.run(send())
+
+
+def _handle_pipeline_progress(data: dict) -> None:
+    """处理 Pipeline 节点进度事件，发送到飞书."""
+    query_id = data.get("query_id", "")
+    team_id = data.get("team_id", "")
+    stage = data.get("stage", "")
+    stage_data = data.get("data", {})
+
+    # 查找对应的 sender_id 和 msg_id（通过 query_id 匹配）
+    sender_id, msg_id = None, None
+    if query_id and query_id in _pending_responses:
+        sender_id, msg_id = _pending_responses[query_id]
+    else:
+        # 回退：取第一个 pending 的响应（避免刷屏）
+        for qid, (sid, mid) in list(_pending_responses.items())[:1]:
+            sender_id, msg_id = sid, mid
+            break
+
+    if not sender_id:
+        return
+
+    # 根据阶段选择 emoji 图标
+    stage_icons = {
+        "intent_started": "🔍",
+        "intent_completed": "✅",
+        "planner_started": "📋",
+        "planner_completed": "📝",
+        "executor_started": "⚙️",
+        "executor_completed": "🔧",
+        "synthesizer_started": "💬",
+        "synthesizer_completed": "✨",
+    }
+    icon = stage_icons.get(stage, "➡️")
+
+    # Agent 类型对应的中文名
+    agent_names = {
+        "intent": "意图识别",
+        "planner": "任务规划",
+        "executor": "任务执行",
+        "synthesizer": "结果汇总",
+    }
+
+    # 构建进度描述（显示团队/节点层级树状结构）
+    # 格式: [团队/子团队] Agent类型: 描述
+    progress_text = ""
+
+    # 判断是主团队还是子团队
+    sub_team = stage_data.get("sub_team", "")
+    if sub_team:
+        team_prefix = f"[{team_id}/{sub_team}]"
+    else:
+        team_prefix = f"[{team_id}]"
+
+    if stage == "intent_started":
+        progress_text = f"{icon} {team_prefix} 意图识别: 分析中..."
+    elif stage == "intent_completed":
+        intents = stage_data.get("intents", [])
+        details = stage_data.get("intent_details", [])
+        if details:
+            intent_list = [f"{d['type']}" for d in details[:5]]
+            progress_text = f"{icon} {team_prefix} 意图识别: {', '.join(intent_list)}"
+        else:
+            intent_str = ", ".join(intents[:5]) if intents else "无"
+            progress_text = f"{icon} {team_prefix} 意图识别: {intent_str}"
+    elif stage == "planner_started":
+        progress_text = f"{icon} {team_prefix} 任务规划: 规划中..."
+    elif stage == "planner_completed":
+        goal_count = stage_data.get("goal_count", 0)
+        details = stage_data.get("goals", [])
+        if details:
+            goal_list = [f"{g['type']}" for g in details[:5]]
+            progress_text = f"{icon} {team_prefix} 任务规划: {', '.join(goal_list)}"
+        else:
+            progress_text = f"{icon} {team_prefix} 任务规划: {goal_count} 个任务"
+    elif stage == "executor_started":
+        goal_count = stage_data.get("goal_count", 0)
+        progress_text = f"{icon} {team_prefix} 任务执行: 开始执行 {goal_count} 个任务..."
+    elif stage == "executor_completed":
+        executed = stage_data.get("executed", 0)
+        details = stage_data.get("results", [])
+        if details:
+            result_list = []
+            for r in details[:3]:
+                status = r.get("status", "")
+                result_text = r.get("result", "")
+                if isinstance(result_text, dict):
+                    result_text = result_text.get("description", result_text.get("message", str(result_text)))
+                result_list.append(f"{result_text}"[:40] if result_text else status)
+            progress_text = f"{icon} {team_prefix} 任务执行: " + " | ".join(result_list)
+        else:
+            progress_text = f"{icon} {team_prefix} 任务执行: 已完成 {executed} 个任务"
+    elif stage == "synthesizer_started":
+        progress_text = f"{icon} {team_prefix} 结果汇总: 生成中..."
+    elif stage == "synthesizer_completed":
+        progress_text = f"{icon} {team_prefix} 结果汇总: 已生成"
+
+    if not progress_text:
+        return
+
+    # 发送进度反馈
+    import asyncio
+    feishu_client = get_feishu_client()
+
+    async def send():
+        try:
+            await feishu_client.send_text(
+                receive_id=sender_id,
+                text=progress_text,
+                msg_id=msg_id,
+            )
+            print(f"[Feishu WS] Progress: {progress_text}")
+        except Exception as e:
+            print(f"[Feishu WS] Failed to send progress: {e}")
 
     try:
         loop = asyncio.get_running_loop()
@@ -403,6 +601,51 @@ async def call_tool(tool_name: str, action: str = "get_status"):
         "description": result.description,
         "state": result.state,
         "error": result.error,
+    }
+
+
+# ============================================================================
+# Capabilities 端点
+# ============================================================================
+
+@app.get("/api/capabilities")
+async def get_capabilities():
+    """返回系统能力列表。
+
+    返回：
+    - channels: 支持的消息通道
+    - intents: 支持的意图类型
+    - tools: 可用工具列表
+    - teams: 可用的Agent团队
+    """
+    from core.orchestration import get_engine
+
+    engine = get_engine()
+    team_ids = list(engine._teams.keys()) if engine._teams else ["default"]
+
+    # MCP_TOOLS is a list of schemas
+    tools_list = registry.list_tools()
+    tool_names = [t.get("name", t.get("title", "unknown")) for t in tools_list]
+
+    return {
+        "channels": ["feishu", "http"],
+        "intents": [
+            "climate_control",
+            "navigation",
+            "music",
+            "vehicle_status",
+            "news",
+            "weather",
+            "emergency",
+        ],
+        "tools": tool_names,
+        "teams": team_ids,
+        "features": {
+            "streaming": True,
+            "hitl": True,
+            "multi_agent": True,
+            "hierarchical_teams": True,
+        },
     }
 
 

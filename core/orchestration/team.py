@@ -29,11 +29,12 @@ class AgentTeam:
     MAX_RESULT_CHARS = 20000
     MAX_RESULT_LINES = 200
 
-    def __init__(self, config: TeamConfig):
+    def __init__(self, config: TeamConfig, progress_callback: Any = None):
         self.config = config
         self.team_id = config.team_id
         self._pipeline: Optional[CollaborationPipeline] = None
         self._cancelled = False
+        self._progress_callback = progress_callback
 
     @property
     def pipeline(self) -> CollaborationPipeline:
@@ -41,6 +42,7 @@ class AgentTeam:
         if self._pipeline is None:
             self._pipeline = CollaborationPipeline(
                 enable_tracing=self.config.enable_tracing,
+                progress_callback=self._progress_callback,
             )
         return self._pipeline
 

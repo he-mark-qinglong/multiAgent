@@ -27,6 +27,12 @@ from core.models import AgentState, UserQuery, EntityType
 from core.event_bus import EventBus, get_event_bus
 from core.langsmith_integration import LangSmithTracer
 
+# LangSmith traceable - graceful degradation
+try:
+    from langsmith import traceable
+except ImportError:
+    traceable = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,10 +55,12 @@ class PipelineStateGraph:
         checkpointer: Any = None,
         store: Any = None,
         event_bus: EventBus | None = None,
+        progress_callback: Any = None,
     ):
         self.checkpointer = checkpointer or (MemorySaver() if LANGGRAPH_AVAILABLE else None)
         self.store = store or (InMemoryStore() if LANGGRAPH_AVAILABLE else None)
         self.event_bus = event_bus or get_event_bus()
+        self.progress_callback = progress_callback  # 进度回调：node完成时调用
         self.tracer = LangSmithTracer()
         self._graph = None
 
@@ -95,6 +103,19 @@ class PipelineStateGraph:
                 source_agent=source_agent,
             )
 
+    def _emit_progress(self, stage: str, data: dict[str, Any]) -> None:
+        """Emit progress event via callback.
+
+        Args:
+            stage: Stage name (intent_started, intent_completed, planner_started, etc.)
+            data: Stage data.
+        """
+        if self.progress_callback:
+            try:
+                self.progress_callback(stage, data)
+            except Exception as e:
+                logger.error(f"Progress callback error: {e}")
+
     def _build_graph(self) -> Any:
         """Build the pipeline StateGraph."""
         graph = StateGraph(AgentState)
@@ -127,9 +148,11 @@ class PipelineStateGraph:
         """Check if execution should be interrupted for human approval."""
         return state.needs_approval and not state.interrupted
 
+    @traceable(name="pipeline.intent_node") if traceable else lambda fn: fn
     async def _intent_node(self, state: AgentState) -> dict[str, Any]:
         """Intent recognition node - uses IntentAgent with MiniMax LLM."""
         logger.info("Intent node: %s", state.user_query[:50])
+        self._emit_progress("intent_started", {"query": state.user_query[:50]})
 
         # Use IntentAgent with MiniMax LLM
         agents = self._get_agents()
@@ -151,11 +174,27 @@ class PipelineStateGraph:
                     source_agent="intent_agent",
                 )
 
+        intent_types = [n.intent for n in intent_chain.nodes] if intent_chain else []
+        # 构建更详细的意图信息
+        intent_details = []
+        for n in intent_chain.nodes if intent_chain else []:
+            intent_details.append({
+                "type": n.intent,
+                "params": n.entities or {},
+            })
+        self._emit_progress("intent_completed", {
+            "intents": intent_types,
+            "intent_details": intent_details,
+        })
         return {"intent_chain": intent_chain}
 
+    @traceable(name="pipeline.planner_node") if traceable else lambda fn: fn
     async def _planner_node(self, state: AgentState) -> dict[str, Any]:
         """Planning node - uses PlannerAgent to create multiple goals."""
+        self._emit_progress("planner_started", {"intent_count": len(state.intent_chain.nodes) if state.intent_chain else 0})
+
         if not state.intent_chain:
+            self._emit_progress("planner_completed", {"goals": 0})
             return {"plan": None, "goals": {}}
 
         # Use PlannerAgent with MiniMax LLM
@@ -178,19 +217,35 @@ class PipelineStateGraph:
                 source_agent="planner_agent",
             )
 
+        # 构建更详细的 goal 信息
+        goal_details = []
+        for goal_id, goal in goals.items():
+            goal_details.append({
+                "id": goal_id,
+                "type": goal.type,
+                "description": goal.description,
+            })
+        self._emit_progress("planner_completed", {
+            "goal_count": len(goals),
+            "goals": goal_details,
+        })
         return {"plan": plan, "goals": goals}
 
+    @traceable(name="pipeline.executor_node") if traceable else lambda fn: fn
     async def _executor_node(self, state: AgentState) -> dict[str, Any]:
         """Execution node with interrupt support - uses ExecutorAgent with ToolRegistry."""
         goals = state.goals
+        self._emit_progress("executor_started", {"goal_count": len(goals)})
 
         if not goals:
+            self._emit_progress("executor_completed", {"executed": 0})
             return {"execution_results": {}}
 
         if state.needs_approval and not state.interrupted:
             if LANGGRAPH_AVAILABLE and interrupt:
                 result = interrupt("等待用户审批: 是否继续执行?")
                 if not result.get("approved", False):
+                    self._emit_progress("executor_completed", {"status": "interrupted"})
                     return {
                         "execution_results": {},
                         "needs_approval": False,
@@ -217,6 +272,18 @@ class PipelineStateGraph:
                 source_agent="executor_agent",
             )
 
+        # 构建更详细的执行结果信息
+        result_details = []
+        for goal_id, result_data in execution_results.items():
+            result_details.append({
+                "goal_id": goal_id,
+                "status": result_data.get("status", "completed"),
+                "result": result_data.get("output", result_data.get("description", "")),
+            })
+        self._emit_progress("executor_completed", {
+            "executed": len(execution_results),
+            "results": result_details,
+        })
         return {"execution_results": execution_results}
 
     async def _human_approval_node(self, state: AgentState) -> dict[str, Any]:
@@ -228,8 +295,11 @@ class PipelineStateGraph:
             }
         }
 
+    @traceable(name="pipeline.synthesizer_node") if traceable else lambda fn: fn
     async def _synthesizer_node(self, state: AgentState) -> dict[str, Any]:
         """Synthesis node - uses SynthesizerAgent for natural language summary."""
+        self._emit_progress("synthesizer_started", {})
+
         # Use SynthesizerAgent for natural language response
         agents = self._get_agents()
         synthesizer_agent = agents["synthesizer"]
@@ -239,6 +309,7 @@ class PipelineStateGraph:
         result = await synthesizer_agent.act(state, thought)
         final_response = result.get("final_response", "")
 
+        self._emit_progress("synthesizer_completed", {"response_length": len(final_response)})
         return {"final_response": final_response}
 
     def invoke(

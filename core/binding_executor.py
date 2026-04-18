@@ -18,6 +18,12 @@ from core.binding_schema import (
     ActionSelector,
 )
 from core.condition_evaluator import ConditionEvaluator
+
+# LangSmith traceable - graceful degradation
+try:
+    from langsmith import traceable
+except ImportError:
+    traceable = None
 from core.param_mapper import ParamMapper
 
 logger = logging.getLogger(__name__)
@@ -74,6 +80,7 @@ class BindingExecutor:
         self.evaluator = evaluator or ConditionEvaluator()
         self.param_mapper = param_mapper or ParamMapper()
 
+    @traceable(name="binding_executor.execute") if traceable else lambda fn: fn
     def execute(self, binding: BindingConfig, context: dict) -> ExecutionResult:
         """Synchronous execute a binding.
 
@@ -244,6 +251,7 @@ class BindingExecutor:
         else:  # fixed
             return base_delay
 
+    @traceable(name="binding_executor.secondary_fallback") if traceable else lambda fn: fn
     def _execute_secondary_fallback(self, binding: BindingConfig, context: dict) -> ExecutionResult:
         """Execute secondary/fallback configurations in order.
 

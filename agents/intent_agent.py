@@ -174,10 +174,15 @@ class IntentAgent(BaseReActAgent):
                         params = intent_data.get("params", {}) or intent_data.get("parameters", {})
                         confidence = intent_data.get("confidence", 0.9)
 
+                        # 过滤低置信度意图（避免 LLM 返回过多无关意图）
+                        if confidence < 0.5:
+                            logger.debug(f"  Filtered intent {intent_type}: confidence {confidence} < 0.5")
+                            continue
+
                         # Map category/name to standard intent types
                         intent_type = self._normalize_intent_type(intent_type)
 
-                        logger.debug(f"  Intent: type={intent_type}, normalized={intent_type}")
+                        logger.debug(f"  Intent: type={intent_type}, normalized={intent_type}, confidence={confidence}")
                         if intent_type != "unknown":
                             node = IntentNode(
                                 intent=intent_type,
@@ -203,6 +208,13 @@ class IntentAgent(BaseReActAgent):
                 merged_count += 1
         if merged_count > 0:
             logger.info(f"IntentAgent: Merged {merged_count} keyword intents not found by LLM")
+
+        # 限制意图总数（避免过多无关意图）
+        MAX_INTENTS = 5
+        if len(intent_nodes) > MAX_INTENTS:
+            # 按置信度排序，保留最高的
+            intent_nodes = sorted(intent_nodes, key=lambda n: n.confidence, reverse=True)[:MAX_INTENTS]
+            logger.info(f"IntentAgent: Limited intents to {MAX_INTENTS}")
 
         intent_chain = IntentChain(
             nodes=intent_nodes,

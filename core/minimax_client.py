@@ -122,14 +122,31 @@ class MiniMaxClient:
         """Close is a no-op since we don't cache the client."""
         pass
 
-    def format_tools(self, mcp_tools: dict[str, Any]) -> list[dict]:
-        """Format MCP tools for Anthropic function calling."""
+    def format_tools(self, mcp_tools: list[dict] | dict[str, Any]) -> list[dict]:
+        """Format MCP tools for Anthropic function calling.
+
+        Args:
+            mcp_tools: Either a list of tool schemas or a dict {name: schema}.
+        """
         formatted = []
-        for tool_name, tool_def in mcp_tools.items():
+
+        # Handle both list and dict formats
+        if isinstance(mcp_tools, list):
+            # List format: [{"name": "tool1", ...}, ...]
+            # Convert to dict for uniform handling
+            tool_iter = {t.get("name", "unknown"): t for t in mcp_tools}
+        else:
+            # Dict format: {"tool_name": {...}}
+            tool_iter = mcp_tools
+
+        for tool_name, tool_def in tool_iter.items():
             params = tool_def.get("parameters", {})
+            properties = params.get("properties", {})  # 真正的参数在 properties 里
+            required_list = params.get("required", [])
+
             formatted.append({
-                "name": tool_def["name"],
-                "description": tool_def["description"],
+                "name": tool_def.get("name", tool_name),
+                "description": tool_def.get("description", ""),
                 "input_schema": {
                     "type": "object",
                     "properties": {
@@ -137,10 +154,10 @@ class MiniMaxClient:
                             "type": prop_def.get("type", "string"),
                             "description": prop_def.get("description", ""),
                         }
-                        for prop_name, prop_def in params.items()
+                        for prop_name, prop_def in properties.items()
                     },
-                    "required": [
-                        p for p, d in params.items()
+                    "required": required_list or [
+                        p for p, d in properties.items()
                         if d.get("required", False) or p in ["action", "value", "destination"]
                     ],
                 },

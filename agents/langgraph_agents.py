@@ -31,6 +31,12 @@ except ImportError:
 from core.models import AgentState
 from core.langsmith_integration import LangSmithTracer
 
+# LangSmith traceable - graceful degradation
+try:
+    from langsmith import traceable
+except ImportError:
+    traceable = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,6 +83,7 @@ class BaseReActAgent(ABC):
             self._graph = self._build_graph()
 
     @abstractmethod
+    @traceable(name="agent.think") if traceable else lambda fn: fn
     async def think(self, state: AgentState) -> str:
         """Reasoning step - returns thought string.
 
@@ -89,6 +96,7 @@ class BaseReActAgent(ABC):
         pass
 
     @abstractmethod
+    @traceable(name="agent.act") if traceable else lambda fn: fn
     async def act(self, state: AgentState, thought: str) -> dict[str, Any]:
         """Action step - returns state updates.
 
@@ -165,6 +173,7 @@ class BaseReActAgent(ABC):
 
         return {"messages": messages, **updates}
 
+    @traceable(name="agent.run") if traceable else lambda fn: fn
     async def run(self, input: str, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """Run agent - full ReAct cycle.
 
