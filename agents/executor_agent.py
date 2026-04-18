@@ -60,9 +60,12 @@ LLM_DESCRIPTION_PROMPT = """你是一个车载助手。请根据以下工具执�
 
 
 class ExecutorAgent(BaseReActAgent):
-    """L2+ Agent for task execution using ToolRegistry."""
+    """L2+ Agent for task execution using ToolRegistry.
 
-    def __init__(self, executor_id: str, llm: Any | None = None):
+    Supports HYBRID mode: tries dynamic binding first, falls back to hardcoded.
+    """
+
+    def __init__(self, executor_id: str, llm: Any | None = None, binding_manager: Any = None):
         super().__init__(
             agent_id=f"executor_{executor_id}",
             name=f"Executor {executor_id}",
@@ -72,6 +75,7 @@ class ExecutorAgent(BaseReActAgent):
         self.executor_id = executor_id
         self.llm = llm
         self._registry = None
+        self._binding_manager = binding_manager
 
     def _get_registry(self):
         """Lazy load ToolRegistry to avoid circular import."""
@@ -82,6 +86,22 @@ class ExecutorAgent(BaseReActAgent):
             from backend.tools import registry
             self._registry = registry
         return self._registry
+
+    def _get_binding_manager(self):
+        """Lazy load BindingManager to avoid circular import."""
+        if self._binding_manager is None:
+            try:
+                from core.binding_manager import get_binding_manager
+                self._binding_manager = get_binding_manager()
+            except ImportError:
+                logger.warning("BindingManager not available, using hardcoded fallback only")
+                return None
+        return self._binding_manager
+
+    def set_binding_manager(self, manager: Any) -> None:
+        """Set the binding manager for dynamic binding."""
+        self._binding_manager = manager
+        logger.info(f"Executor {self.executor_id} binding manager set")
 
     async def think(self, state: AgentState) -> str:
         """Analyze assigned goal."""
@@ -164,12 +184,44 @@ class ExecutorAgent(BaseReActAgent):
             return tool_result.description
 
     def _execute_goal(self, goal: Goal, registry) -> Any:
-        """Execute a single goal using ToolRegistry."""
+        """Execute a single goal using ToolRegistry.
+
+        HYBRID MODE: Tries dynamic binding first, falls back to hardcoded.
+        """
         goal_type = goal.type
         intent_info = getattr(goal, 'result', {}) or {}
         entities = intent_info.get("entities", {})
 
-        # Map goal type to tool and action
+        # Build context for binding execution
+        context = {
+            "goal_type": goal_type,
+            "intent": intent_info.get("intent", {}),
+            "entities": entities,
+        }
+
+        # Try dynamic binding first (HYBRID mode)
+        binding_manager = self._get_binding_manager()
+        if binding_manager is not None:
+            binding = binding_manager.get_binding(goal_type)
+            if binding is not None:
+                try:
+                    from core.binding_executor import set_tool_registry
+                    set_tool_registry(registry)
+                    result = binding_manager.execute_binding(goal_type, context)
+                    if result.success:
+                        logger.info(f"Executed {goal_type} via dynamic binding")
+                        # Convert ExecutionResult to tool result format
+                        class BindingResult:
+                            def __init__(self, exec_result):
+                                self.description = exec_result.output
+                                self.state = exec_result.state
+                        return BindingResult(result)
+                    else:
+                        logger.warning(f"Dynamic binding failed for {goal_type}: {result.state.get('error')}, trying hardcoded fallback")
+                except Exception as e:
+                    logger.warning(f"Dynamic binding error for {goal_type}: {e}, trying hardcoded fallback")
+
+        # Fall back to hardcoded mapping
         if goal_type == "climate_control":
             # Use control action with compound params
             params = {}
