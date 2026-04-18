@@ -3,6 +3,8 @@
 import sys
 sys.path.insert(0, '.')
 
+import uuid
+
 import pytest
 from core.langgraph_integration import PipelineStateGraph, HumanApprovalManager
 from core.models import AgentState, UserQuery, IntentChain, IntentNode, Goal, Plan
@@ -16,39 +18,46 @@ class TestLangGraphStateE2E:
         return PipelineStateGraph()
 
     @pytest.fixture
+    def session_config(self):
+        """Session config for checkpointer (uses thread_id for LangGraph MemorySaver)."""
+        import uuid
+        session_id = f"test_session_{uuid.uuid4().hex[:8]}"
+        return {"configurable": {"thread_id": session_id}}
+
+    @pytest.fixture
     def approval_manager(self, graph):
         return HumanApprovalManager(graph)
 
-    def test_state_transitions_intent_to_planner(self, graph):
+    def test_state_transitions_intent_to_planner(self, graph, session_config):
         """State flows from intent to planner node."""
         input_data = {"user_query": "测试查询"}
-        result = graph.invoke(input_data)
+        result = graph.invoke(input_data, config=session_config)
         assert isinstance(result, dict)
         # After intent node, intent_chain should be set
         if result.get("intent_chain"):
             assert isinstance(result["intent_chain"], IntentChain)
 
-    def test_state_transitions_full_pipeline(self, graph):
+    def test_state_transitions_full_pipeline(self, graph, session_config):
         """State flows through all pipeline nodes."""
         input_data = {"user_query": "完整流程测试"}
-        result = graph.invoke(input_data)
+        result = graph.invoke(input_data, config=session_config)
         assert isinstance(result, dict)
         # State should accumulate through all nodes
         assert "user_query" in result
 
-    def test_state_includes_goals_after_planner(self, graph):
+    def test_state_includes_goals_after_planner(self, graph, session_config):
         """Planner node creates goals in state."""
         input_data = {"user_query": "创建目标"}
-        result = graph.invoke(input_data)
+        result = graph.invoke(input_data, config=session_config)
         # Goals dict should be present
         assert "goals" in result
         assert isinstance(result["goals"], dict)
 
-    def test_interrupt_triggers_when_needs_approval(self, graph):
+    def test_interrupt_triggers_when_needs_approval(self, graph, session_config):
         """needs_approval=True triggers interrupt node."""
         input_data = {"user_query": "需要审批", "needs_approval": True}
         # This should reach the interrupt/approval node
-        result = graph.invoke(input_data)
+        result = graph.invoke(input_data, config=session_config)
         assert isinstance(result, dict)
 
     def test_state_history_stored_by_checkpointer(self, graph):
@@ -77,10 +86,10 @@ class TestLangGraphStateE2E:
         assert isinstance(result_a, dict)
         assert isinstance(result_b, dict)
 
-    def test_state_graph_stream_output(self, graph):
+    def test_state_graph_stream_output(self, graph, session_config):
         """stream() outputs structured result."""
         input_data = {"user_query": "流式测试"}
-        chunks = list(graph.stream(input_data))
+        chunks = list(graph.stream(input_data, config=session_config))
         assert len(chunks) >= 1
         assert chunks[0].get("type") in ("result", "error")
 
@@ -142,5 +151,7 @@ class TestLangGraphStateE2E:
         """Pipeline handles LangGraph unavailability gracefully."""
         # The PipelineStateGraph handles LANGGRAPH_AVAILABLE=False
         graph = PipelineStateGraph()
-        result = graph.invoke({"user_query": "test"})
+        session_id = f"graceful_test_{uuid.uuid4().hex[:8]}"
+        config = {"configurable": {"thread_id": session_id}}
+        result = graph.invoke({"user_query": "test"}, config=config)
         assert isinstance(result, dict)
